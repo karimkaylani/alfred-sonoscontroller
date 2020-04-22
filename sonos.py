@@ -22,6 +22,8 @@ def main(wf):
     query = str(args.query)
     response = query.split()
     speakerName = query.partition(';')[0]
+    commands = query.partition(';')[2]
+    commandResponse = commands.split()
 
     if len(response) >= 1:
         device = soco.discovery.by_name(speakerName)
@@ -34,10 +36,10 @@ def main(wf):
 
         elif "volume" in query:
             value = "..."
-            if len(response) > 2:
-                value = response[2]
-            volArg = response[0] + ' volpcg ' + value
-            chVolArg = response[0] + ' chvol ' + value
+            if len(commandResponse) > 1:
+                value = commandResponse[1]
+            volArg = speakerName + '; volpcg ' + value
+            chVolArg = speakerName + '; chvol ' + value
             wf.add_item('Set Volume to ' + value, subtitle='Enter a number from 0 to 100', valid=True, 
             arg=volArg, icon='lib/icons/volume.png')
             wf.add_item('Change Volume by ' + value, subtitle='Adjust the volume up or down by a relative amount', 
@@ -45,10 +47,10 @@ def main(wf):
             wf.add_item("Current Volume: " + str(device.volume), icon='lib/icons/volume.png')
 
         elif "volpcg" in query:
-            device.volume = response[2]
+            device.volume = commandResponse[1]
 
         elif "chvol" in query:
-            device.set_relative_volume(response[2])
+            device.set_relative_volume(commandResponse[1])
 
         elif "next" in query:
             device.next()
@@ -64,20 +66,20 @@ def main(wf):
             else:
                 for song in queue:
                     queueNum = str(song.item_id).partition('/')[2]
-                    wf.add_item(title=song.title, valid=True, arg=response[0] + ' plque ' + str(queueNum))
+                    wf.add_item(title=song.title, valid=True, arg=speakerName + '; plque ' + str(queueNum))
 
         elif "plque" in query:
-            device.play_from_queue(int(response[2]) - 1)
+            device.play_from_queue(int(commandResponse[1]) - 1)
 
         elif "plmode" in query:
             wf.add_item(title='Enable Shuffle', subtitle='Enable shuffle and disable repeat', valid=True, 
-            arg=response[0] + ' enshuffle', icon='lib/icons/shuffle.png')
+            arg=speakerName + '; enshuffle', icon='lib/icons/shuffle.png')
             wf.add_item(title='Disable Shuffle', subtitle='Disable shuffle and repeat', valid=True, 
-            arg=response[0] + ' disshuffle', icon='lib/icons/noshuffle.png')
+            arg=speakerName + '; disshuffle', icon='lib/icons/noshuffle.png')
             wf.add_item(title='Enable Repeat', subtitle='Enable repeat and disable shuffle', valid=True, 
-            arg=response[0] + ' enrepeat', icon='lib/icons/repeat.png')
+            arg=speakerName + '; enrepeat', icon='lib/icons/repeat.png')
             wf.add_item(title='Enable Shuffle/Repeat', subtitle='Enable shuffle and repeat', valid=True, 
-            arg=response[0] + ' enshuffrep', icon='lib/icons/shuffrep.png')
+            arg=speakerName + '; enshuffrep', icon='lib/icons/shuffrep.png')
 
         elif "enshuffle" in query:
             device.play_mode = 'SHUFFLE_NOREPEAT'
