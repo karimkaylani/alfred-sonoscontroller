@@ -58,9 +58,13 @@ def main(wf):
         
         elif "queue" in query:
             queue = device.get_queue()
-            for song in queue:
-                queueNum = str(song.item_id).partition('/')[2]
-                wf.add_item(title=song.title, valid=True, arg=response[0] + ' plque ' + str(queueNum))
+            if len(queue) == 0:
+                wf.add_item(title='Queue is empty', 
+                subtitle='You must start playback through the Sonos app to generate a queue', valid=False, icon='lib/icons/queue.png')
+            else:
+                for song in queue:
+                    queueNum = str(song.item_id).partition('/')[2]
+                    wf.add_item(title=song.title, valid=True, arg=response[0] + ' plque ' + str(queueNum))
 
         elif "plque" in query:
             device.play_from_queue(int(response[2]) - 1)
