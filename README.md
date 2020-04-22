@@ -2,7 +2,7 @@
 
 > Control playback of your Sonos speakers straight from Alfred!
 
-[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/wi4oZ5z.jpg)]()
+[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/V726b90.jpg)]()
 
 ## Installation
 
@@ -22,7 +22,7 @@
 
 Type <code>soco</code> into Alfred, select your device, and then control it on the following screen
 
-[![INSERT YOUR GRAPHIC HERE](http://g.recordit.co/8Ra9jgv2ea.gif)]()
+[![INSERT YOUR GRAPHIC HERE](http://g.recordit.co/7jTaMJQSPE.gif)]()
 
 
 ## Hotkeys
