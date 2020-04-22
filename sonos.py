@@ -21,9 +21,10 @@ def main(wf):
     speakers = soco.discover()
     query = str(args.query)
     response = query.split()
+    speakerName = query.partition(';')[0]
 
     if len(response) >= 1:
-        device = soco.discovery.by_name(response[0])
+        device = soco.discovery.by_name(speakerName)
 
         if "play" in query:
             device.play()
@@ -101,7 +102,7 @@ def main(wf):
     else:
         for speaker in speakers:
             wf.add_item(title=speaker.player_name, 
-            subtitle=speaker.ip_address, autocomplete=speaker.player_name, valid=False, uid=speaker.player_name, icon='lib/icons/speaker.png')
+            subtitle=speaker.ip_address, autocomplete=speaker.player_name + ';', valid=False, uid=speaker.player_name, icon='lib/icons/speaker.png')
 
     wf.send_feedback()
 
