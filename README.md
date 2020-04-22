@@ -59,7 +59,7 @@ ex:
 
 <code>enshuffrep</code> - Enable shuffle and repeat
 
-<code>plqueue [position in queue]</code> - Play a song in a certain position in queue (only tested on Spotify playing through Sonos app)
+<code>plque [position in queue]</code> - Play a song in a certain position in queue (only tested on Spotify playing through Sonos app)
 
 ## Acknowledgements
 
