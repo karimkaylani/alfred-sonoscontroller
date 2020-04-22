@@ -35,7 +35,7 @@ ex:
 
 <code>Bedroom; play</code>
 
-[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/SWHlSyB.jpg)]()
+[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/Rtz8TmR.jpg)]()
 
  Keywords:
 
