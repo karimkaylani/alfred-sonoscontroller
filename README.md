@@ -29,11 +29,11 @@ Type <code>soco</code> into Alfred, select your device, and then control it on t
 
 Hotkeys are added by adding a hotkey trigger on the flowchart and connecting it to the run script block with a text argument that follows this syntax
 
-<code>(sonosName) (commandKeyword)</code>
+<code>(sonosName); (commandKeyword)</code>
 
 ex:
 
-<code>Bedroom play</code>
+<code>Bedroom; play</code>
 
 [![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/SWHlSyB.jpg)]()
 
@@ -43,7 +43,7 @@ ex:
 
 <code>pause</code> - Pause Sonos device
 
-<code>volpcg [value]</code> - Set volume to specified value (ex. <code>Bedroom volpcg 50</code>)
+<code>volpcg [value]</code> - Set volume to specified value (ex. <code>Bedroom; volpcg 50</code>)
 
 <code>chvol [value]</code> - Change volume by a specified value
 
