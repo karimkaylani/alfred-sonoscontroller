@@ -19,13 +19,12 @@ def main(wf):
     #fetch sonos speakers
 
     speakers = soco.discover()
-    query = str(args.query)
-    response = query.split()
+    query = args.query
     speakerName = query.partition(';')[0]
     commands = query.partition(';')[2]
     commandResponse = commands.split()
 
-    if len(response) >= 1:
+    if len(query.split()) >= 1:
         device = soco.discovery.by_name(speakerName)
 
         if "plpau" in query:
@@ -118,7 +117,7 @@ def main(wf):
     wf.send_feedback()
 
 if __name__ == u"__main__":
-     wf = Workflow(libraries=['./lib'], update_settings={'github_slug' :'karimkaylani/alfred-sonoscontroller', 'frequency' : 7})
+     wf = Workflow(libraries=['./lib'], update_settings={'github_slug' :'karimkaylani/alfred-sonoscontroller', 'frequency' : 1})
      log = wf.logger
      sys.exit(wf.run(main)) 
 
