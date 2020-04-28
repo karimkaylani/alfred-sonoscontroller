@@ -140,17 +140,17 @@
 				<key>argument</key>
 				<integer>3</integer>
 				<key>argumenttext</key>
-				<string>Bedroom play</string>
+				<string>Bedroom; plpau</string>
 				<key>focusedappvariable</key>
 				<false/>
 				<key>focusedappvariablename</key>
 				<string></string>
 				<key>hotkey</key>
-				<integer>4</integer>
+				<integer>0</integer>
 				<key>hotmod</key>
-				<integer>786432</integer>
+				<integer>0</integer>
 				<key>hotstring</key>
-				<string>H</string>
+				<string></string>
 				<key>leftcursor</key>
 				<false/>
 				<key>modsmode</key>
@@ -173,17 +173,17 @@
 				<key>argument</key>
 				<integer>3</integer>
 				<key>argumenttext</key>
-				<string>Bedroom pause</string>
+				<string>Living Room; next</string>
 				<key>focusedappvariable</key>
 				<false/>
 				<key>focusedappvariablename</key>
 				<string></string>
 				<key>hotkey</key>
-				<integer>4</integer>
+				<integer>0</integer>
 				<key>hotmod</key>
-				<integer>1835008</integer>
+				<integer>0</integer>
 				<key>hotstring</key>
-				<string>H</string>
+				<string></string>
 				<key>leftcursor</key>
 				<false/>
 				<key>modsmode</key>
@@ -200,7 +200,71 @@
 		</dict>
 	</array>
 	<key>readme</key>
-	<string></string>
+	<string>Features
+
+Play, Pause, Next, Previous
+
+Set/Change Volume
+
+View Queue
+
+Play Songs from Queue (only tested on Spotify playing through Sonos app)
+
+Control Shuffle/Repeat
+
+
+Usage
+
+Type soco into Alfred, select your device, and then control it on the following screen
+
+
+Hotkeys
+
+Hotkeys are added by adding a hotkey trigger on the flowchart and connecting it to the run script block with a text argument that follows this syntax
+
+(sonosName); (command)
+
+ex: Bedroom; next
+
+
+Commands:
+
+plpau - Play/Pause Sonos device
+
+play - Play Sonos device
+
+pause - Pause Sonos device
+
+volpcg [value] - Set volume to specified value (ex. Bedroom; volpcg 50)
+
+chvol [value] - Change volume by a specified value
+
+next - Go to the next song
+
+previous - Go to the previous song
+
+enshuffle - Enable shuffle and disable repeat
+
+disshuffle - Disable shuffle and disable repeat
+
+enrepeat - Enable repeat and disable shuffle
+
+enshuffrep - Enable shuffle and repeat
+
+plqueue [position in queue] - Play a song in a certain position in queue (only tested on Spotify playing through Sonos app)
+
+
+Acknowledgements
+
+
+This workflow was built using deanishe's Alfred-Workflow
+
+Huge shoutout to the team behind SoCo which this workflow uses heavily
+
+
+License
+
+This workflow is released under the MIT license</string>
 	<key>uidata</key>
 	<dict>
 		<key>19F116FC-7889-4B23-B424-20F96978D25D</key>
@@ -232,9 +296,11 @@
 			<integer>175</integer>
 		</dict>
 	</dict>
+	<key>variablesdontexport</key>
+	<array/>
 	<key>version</key>
-	<string>1.0</string>
+	<string>1.1</string>
 	<key>webaddress</key>
-	<string></string>
+	<string>https://github.com/karimkaylani/alfred-sonoscontroller</string>
 </dict>
 </plist>

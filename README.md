@@ -2,7 +2,7 @@
 
 > Control playback of your Sonos speakers straight from Alfred!
 
-[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/V726b90.jpg)]()
+[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/r8UZWT7.jpg)]()
 
 ## Installation
 
@@ -29,15 +29,17 @@ Type <code>soco</code> into Alfred, select your device, and then control it on t
 
 Hotkeys are added by adding a hotkey trigger on the flowchart and connecting it to the run script block with a text argument that follows this syntax
 
-<code>(sonosName); (commandKeyword)</code>
+<code>(sonosName); (command)</code>
 
 ex:
 
-<code>Bedroom; play</code>
+<code>Bedroom; next</code>
 
-[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/Rtz8TmR.jpg)]()
+[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/R94Vye3.jpg)]()
 
- Keywords:
+ Commands:
+
+ <code>plpau</code> - Play/Pause Sonos device
 
 <code>play</code> - Play Sonos device
 

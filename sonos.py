@@ -28,7 +28,13 @@ def main(wf):
     if len(response) >= 1:
         device = soco.discovery.by_name(speakerName)
 
-        if "play" in query:
+        if "plpau" in query:
+            if device.get_current_transport_info()['current_transport_state'] == "PLAYING":
+                device.pause()
+            else:
+                device.play()
+
+        elif "play" in query:
             device.play()
 
         elif "pause" in query:
@@ -94,8 +100,7 @@ def main(wf):
             device.play_mode = 'SHUFFLE'
         
         else:
-            wf.add_item(title='Play', valid=True, arg=query + ' play', icon='lib/icons/play.png')
-            wf.add_item(title='Pause', valid=True, arg=query + ' pause', icon='lib/icons/pause.png')
+            wf.add_item(title='Play/Pause', valid=True, arg=query + ' plpau', icon='lib/icons/plpau.png')
             wf.add_item(title='Volume', valid=False, icon='lib/icons/volume.png', autocomplete=query + ' volume ')
             wf.add_item(title='Next', valid=True, arg=query + ' next',icon='lib/icons/next.png')
             wf.add_item(title='Previous', valid=True, arg=query + ' previous', icon='lib/icons/prev.png')
