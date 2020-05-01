@@ -294,10 +294,8 @@ This workflow is released under the MIT license</string>
 			<integer>175</integer>
 		</dict>
 	</dict>
-	<key>variablesdontexport</key>
-	<array/>
 	<key>version</key>
-	<string>1.1.1</string>
+	<string>1.2</string>
 	<key>webaddress</key>
 	<string>https://github.com/karimkaylani/alfred-sonoscontroller</string>
 </dict>

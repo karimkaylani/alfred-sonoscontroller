@@ -71,7 +71,18 @@ def main(wf):
             else:
                 for song in queue:
                     queueNum = str(song.item_id).partition('/')[2]
-                    wf.add_item(title=song.title, valid=True, arg=speakerName + '; plque ' + str(queueNum))
+
+                    try:
+                        queueSongTitle = song.title + " - " + song.creator
+                    except:
+                        queueSongTitle = song.title
+
+                    try:
+                        queueSongSub = song.album
+                    except:
+                        queueSongSub = ""
+                        
+                    wf.add_item(title=queueSongTitle, subtitle=queueSongSub, valid=True, arg=speakerName + '; plque ' + str(queueNum))
 
         elif "plque" in query:
             device.play_from_queue(int(commandResponse[1]) - 1)
@@ -105,8 +116,14 @@ def main(wf):
             wf.add_item(title='Previous', valid=True, arg=query + ' previous', icon='lib/icons/prev.png')
             wf.add_item(title='Queue', valid=False, autocomplete=query + ' queue ', icon='lib/icons/queue.png')
             wf.add_item(title='Play Mode', valid=False, autocomplete=query + ' plmode ', icon='lib/icons/shuffle.png')
+
+            if (device.get_current_track_info()['album']):
+                currentTrackSub = device.get_current_track_info()['album'] + " / " + device.get_current_track_info()['duration']
+            else:
+                currentTrackSub = device.get_current_track_info()['duration']
+
             wf.add_item("Current Track: " + device.get_current_track_info()['title'] + " - " + device.get_current_track_info()['artist'], 
-            icon='lib/icons/nowplaying.png')
+            subtitle=currentTrackSub, icon='lib/icons/nowplaying.png')
             wf.add_item("Status: " + device.get_current_transport_info()['current_transport_state'], icon='lib/icons/speaker.png')
 
     else:
