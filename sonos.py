@@ -23,6 +23,10 @@ def main(wf):
     speakerName = query.partition(';')[0]
     commands = query.partition(';')[2]
     commandResponse = commands.split()
+    speakerNameList = []
+
+    for speaker in speakers:
+        speakerNameList.append(speaker.player_name)
 
     if len(query.split()) >= 1:
         device = soco.discovery.by_name(speakerName)
@@ -110,21 +114,40 @@ def main(wf):
             device.play_mode = 'SHUFFLE'
         
         else:
-            wf.add_item(title='Play/Pause', valid=True, arg=query + ' plpau', icon='lib/icons/plpau.png')
-            wf.add_item(title='Volume', valid=False, icon='lib/icons/volume.png', autocomplete=query + ' volume ')
-            wf.add_item(title='Next', valid=True, arg=query + ' next',icon='lib/icons/next.png')
-            wf.add_item(title='Previous', valid=True, arg=query + ' previous', icon='lib/icons/prev.png')
-            wf.add_item(title='Queue', valid=False, autocomplete=query + ' queue ', icon='lib/icons/queue.png')
-            wf.add_item(title='Play Mode', valid=False, autocomplete=query + ' plmode ', icon='lib/icons/shuffle.png')
+            try:
+                if (device.get_current_track_info()['album']):
+                    currentTrackSub = device.get_current_track_info()['album'] + " / " + device.get_current_track_info()['duration']
+                else:
+                    currentTrackSub = device.get_current_track_info()['duration']
 
-            if (device.get_current_track_info()['album']):
-                currentTrackSub = device.get_current_track_info()['album'] + " / " + device.get_current_track_info()['duration']
-            else:
-                currentTrackSub = device.get_current_track_info()['duration']
+                wf.add_item(title='Play/Pause', valid=True, arg=query + ' plpau', icon='lib/icons/plpau.png')
+                wf.add_item(title='Volume', valid=False, icon='lib/icons/volume.png', autocomplete=query + ' volume ')
+                wf.add_item(title='Next', valid=True, arg=query + ' next',icon='lib/icons/next.png')
+                wf.add_item(title='Previous', valid=True, arg=query + ' previous', icon='lib/icons/prev.png')
+                wf.add_item(title='Queue', valid=False, autocomplete=query + ' queue ', icon='lib/icons/queue.png')
+                wf.add_item(title='Play Mode', valid=False, autocomplete=query + ' plmode ', icon='lib/icons/shuffle.png')
 
-            wf.add_item("Current Track: " + device.get_current_track_info()['title'] + " - " + device.get_current_track_info()['artist'], 
-            subtitle=currentTrackSub, icon='lib/icons/nowplaying.png')
-            wf.add_item("Status: " + device.get_current_transport_info()['current_transport_state'], icon='lib/icons/speaker.png')
+                if (device.get_current_track_info()['album']):
+                    currentTrackSub = device.get_current_track_info()['album'] + " / " + device.get_current_track_info()['duration']
+                else:
+                    currentTrackSub = device.get_current_track_info()['duration']
+
+                wf.add_item("Current Track: " + device.get_current_track_info()['title'] + " - " + device.get_current_track_info()['artist'], 
+                subtitle=currentTrackSub, icon='lib/icons/nowplaying.png')
+                wf.add_item("Status: " + device.get_current_transport_info()['current_transport_state'], icon='lib/icons/speaker.png')
+            except AttributeError:
+                items = wf.filter(query, speakerNameList)
+
+                if not items:
+                    wf.add_item(title='No Matches', icon='lib/icons/error.png', 
+                    subtitle="Please enter your speaker name as it appears on the Sonos app")
+                    wf.add_item(title='View all Speakers', autocomplete="", icon='lib/icons/speaker.png')
+                
+                for speaker in items:
+                    wf.add_item(title=speaker, subtitle="Press enter to select",
+                    autocomplete=speaker + ';', valid=False, icon='lib/icons/speaker.png') 
+                
+
 
     else:
         for speaker in speakers:

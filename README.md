@@ -20,7 +20,7 @@
 
 ## Usage
 
-Type <code>soco</code> into Alfred, select your device, and then control it on the following screen
+Type <code>soco</code> into Alfred, select or search your device, and then control it on the following screen
 
 [![INSERT YOUR GRAPHIC HERE](http://g.recordit.co/7jTaMJQSPE.gif)]()
 
