@@ -63,6 +63,20 @@ ex:
 
 <code>plque [position in queue]</code> - Play a song in a certain position in queue (only tested on Spotify playing through Sonos app)
 
+## Troubleshooting
+
+If you find yourself getting the <code>No Speakers Found</code> error, it may be due to an incorrect interface address. This can be caused by having a VPN active, which unfortunatley Sonos does not support.
+
+If you are still recieving this error, you can try manually setting the interface address to your local IP address on your machine (which can be found under your Network settings) by doing the following:
+
+1. Open Alfred Preferences -> Workflows -> SonosController and press the [x] button in the top right corner
+
+    This screen should appear:
+
+    [![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/sl3eily.jpg)]()
+
+2. Double click under the value column on interface_address and enter in the address of your local IP
+
 ## Acknowledgements
 
 This workflow was built using [deanishe's Alfred-Workflow](http://www.deanishe.net/alfred-workflow/)
