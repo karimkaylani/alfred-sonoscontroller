@@ -28,7 +28,7 @@ Type <code>soco</code> into Alfred, select or search your device, and then contr
 
 ## Hotkeys
 
-Hotkeys are added by adding a hotkey trigger on the flowchart and connecting it to the run script block with a text argument that follows this syntax
+Hotkeys are added by adding a hotkey trigger on the workflow flowchart (open Alfred Preferences > Workflows > Sonos Controller, then right click in the empty space > Triggers > Hotkey) and connecting it to the run script block with a text argument that follows the following syntax. You can also edit the preset hotkey triggers by right clicking them and selecting configure object
 
 <code>(sonosName); (command)</code>
 
@@ -37,6 +37,8 @@ ex:
 <code>Bedroom; next</code>
 
 [![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/R94Vye3.jpg)]()
+
+[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/s0IHQoZ.jpg)]()
 
  Commands:
 
