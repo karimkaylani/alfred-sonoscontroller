@@ -2,7 +2,7 @@
 
 > Control playback of your Sonos speakers straight from Alfred!
 
-[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/r8UZWT7.jpg)]()
+[![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/r5QBNKI.jpg)]()
 
 ## Installation
 
@@ -16,6 +16,7 @@
 - Set/Change Volume
 - View Queue
 - Play Songs from Queue (only tested on Spotify playing through Sonos app)
+- Switch to line-in playback (if supported on device)
 - Control Shuffle/Repeat
 
 ## Usage
@@ -52,6 +53,8 @@ ex:
 <code>next</code> - Go to the next song
 
 <code>previous</code> - Go to the previous song
+
+<code>linein</code> - Switch playback to line-in
 
 <code>enshuffle</code> - Enable shuffle and disable repeat
 

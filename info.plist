@@ -206,6 +206,8 @@ View Queue
 
 Play Songs from Queue (only tested on Spotify playing through Sonos app)
 
+Switch to line-in playback (if supported on device)
+
 Control Shuffle/Repeat
 
 
@@ -239,6 +241,8 @@ next - Go to the next song
 
 previous - Go to the previous song
 
+linein - Switch playback to line-in
+
 enshuffle - Enable shuffle and disable repeat
 
 disshuffle - Disable shuffle and disable repeat
@@ -248,6 +252,18 @@ enrepeat - Enable repeat and disable shuffle
 enshuffrep - Enable shuffle and repeat
 
 plqueue [position in queue] - Play a song in a certain position in queue (only tested on Spotify playing through Sonos app)
+
+
+Troubleshooting
+
+
+If you find yourself getting the No Speakers Found error, it may be due to an incorrect interface address. This can be caused by having a VPN active, which unfortunatley Sonos does not support.
+
+If you are still recieving this error, you can try manually setting the interface address to your local IP address on your machine (which can be found under your Network settings) by doing the following:
+
+Open Alfred Preferences -&gt; Workflows -&gt; SonosController and press the [x] button in the top right corner
+
+Double click under the value column on interface_address and enter in the address of your local IP
 
 
 Acknowledgements
@@ -298,7 +314,7 @@ This workflow is released under the MIT license</string>
 		<string></string>
 	</dict>
 	<key>version</key>
-	<string>1.3.1</string>
+	<string>1.4</string>
 	<key>webaddress</key>
 	<string>https://github.com/karimkaylani/alfred-sonoscontroller</string>
 </dict>

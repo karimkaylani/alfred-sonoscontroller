@@ -112,6 +112,11 @@ def main(wf):
             elif "plque" in query:
                 device.play_from_queue(int(commandResponse[1]) - 1)
                 wf.add_item(title="Played Item " + commandResponse[1] + " on the Queue", icon='lib/icons/queue.png')
+
+                
+            elif "linein" in query:
+                device.switch_to_line_in()
+                wf.add_item(title='Switched to Line-in', icon='lib/icons/linein.png')
                 
 
             elif "plmode" in query:
@@ -123,6 +128,18 @@ def main(wf):
                 arg=speakerName + '; enrepeat', icon='lib/icons/repeat.png')
                 wf.add_item(title='Enable Shuffle/Repeat', subtitle='Enable shuffle and repeat', valid=True, 
                 arg=speakerName + '; enshuffrep', icon='lib/icons/shuffrep.png')
+
+                if (device.play_mode == "SHUFFLE_NOREPEAT"):
+                    playModeTitle = "Shuffle, No Repeat"
+                elif (device.play_mode == "NORMAL"):
+                    playModeTitle = "No Shuffle, No Repeat"
+                elif (device.play_mode == "REPEAT_ALL"):
+                     playModeTitle = "No Shuffle, Repeat"
+                else:
+                    playModeTitle = "Shuffle, Repeat"
+
+                wf.add_item("Current Mode: " + playModeTitle, icon='lib/icons/speaker.png')
+
 
             elif "enshuffle" in query:
                 device.play_mode = 'SHUFFLE_NOREPEAT'
@@ -143,11 +160,6 @@ def main(wf):
         
             else:
                 try:
-                    if (device.get_current_track_info()['album']):
-                        currentTrackSub = device.get_current_track_info()['album'] + " / " + device.get_current_track_info()['duration']
-                    else:
-                        currentTrackSub = device.get_current_track_info()['duration']
-
                     wf.add_item(title='Play/Pause', valid=True, arg=query + ' plpau', icon='lib/icons/plpau.png')
                     wf.add_item(title='Volume', valid=False, icon='lib/icons/volume.png', autocomplete=query + ' volume ')
                     wf.add_item(title='Next', valid=True, arg=query + ' next',icon='lib/icons/next.png')
@@ -155,13 +167,24 @@ def main(wf):
                     wf.add_item(title='Queue', valid=False, autocomplete=query + ' queue ', icon='lib/icons/queue.png')
                     wf.add_item(title='Play Mode', valid=False, autocomplete=query + ' plmode ', icon='lib/icons/shuffle.png')
 
+                    if (not device.is_playing_line_in):
+                        wf.add_item(title='Switch to Line-in', valid=True, arg=query + ' linein',icon='lib/icons/linein.png')
+
+
                     if (device.get_current_track_info()['album']):
                         currentTrackSub = device.get_current_track_info()['album'] + " / " + device.get_current_track_info()['duration']
-                    else:
+                    elif (device.get_current_track_info()['duration'] and device.get_current_track_info()['duration'] != "NOT_IMPLEMENTED"):
                         currentTrackSub = device.get_current_track_info()['duration']
+                    else:
+                        currentTrackSub = ""
 
-                    wf.add_item("Current Track: " + device.get_current_track_info()['title'] + " - " + device.get_current_track_info()['artist'], 
-                    subtitle=currentTrackSub, icon='lib/icons/nowplaying.png')
+                    if (device.is_playing_line_in):
+                        wf.add_item("Audio from Line-in Device", icon='lib/icons/nowplaying.png')
+                    else:
+                        wf.add_item("Current Track: " + device.get_current_track_info()['title'] + " - " + device.get_current_track_info()['artist'], 
+                        subtitle=currentTrackSub, icon='lib/icons/nowplaying.png')
+
+                   
                     wf.add_item("Status: " + device.get_current_transport_info()['current_transport_state'], icon='lib/icons/speaker.png')
                 except AttributeError:
                     items = wf.filter(query, speakerNameList)
