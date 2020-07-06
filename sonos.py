@@ -160,6 +160,13 @@ def main(wf):
         
             else:
                 try:
+                    if (device.get_current_track_info()['album']):
+                        currentTrackSub = device.get_current_track_info()['album'] + " / " + device.get_current_track_info()['duration']
+                    elif (device.get_current_track_info()['duration'] and device.get_current_track_info()['duration'] != "NOT_IMPLEMENTED"):
+                        currentTrackSub = device.get_current_track_info()['duration']
+                    else:
+                        currentTrackSub = ""
+
                     wf.add_item(title='Play/Pause', valid=True, arg=query + ' plpau', icon='lib/icons/plpau.png')
                     wf.add_item(title='Volume', valid=False, icon='lib/icons/volume.png', autocomplete=query + ' volume ')
                     wf.add_item(title='Next', valid=True, arg=query + ' next',icon='lib/icons/next.png')
@@ -169,14 +176,6 @@ def main(wf):
 
                     if (not device.is_playing_line_in):
                         wf.add_item(title='Switch to Line-in', valid=True, arg=query + ' linein',icon='lib/icons/linein.png')
-
-
-                    if (device.get_current_track_info()['album']):
-                        currentTrackSub = device.get_current_track_info()['album'] + " / " + device.get_current_track_info()['duration']
-                    elif (device.get_current_track_info()['duration'] and device.get_current_track_info()['duration'] != "NOT_IMPLEMENTED"):
-                        currentTrackSub = device.get_current_track_info()['duration']
-                    else:
-                        currentTrackSub = ""
 
                     if (device.is_playing_line_in):
                         wf.add_item("Audio from Line-in Device", icon='lib/icons/nowplaying.png')
