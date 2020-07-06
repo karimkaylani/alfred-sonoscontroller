@@ -216,7 +216,7 @@ Type soco into Alfred, select or search for your device, and then control it on 
 
 Hotkeys
 
-Hotkeys are added by adding a hotkey trigger on the flowchart and connecting it to the run script block with a text argument that follows this syntax
+Hotkeys are added by adding a hotkey trigger on the workflow flowchart (open Alfred Preferences -&gt; Workflows -&gt; Sonos Controller, then right click in the empty space -&gt; Triggers -&gt; Hotkey) and connecting it to the run script block with a text argument that follows the following syntax. You can also edit the preset hotkey triggers by right clicking them and selecting configure object.
 
 (sonosName); (command)
 
@@ -311,6 +311,8 @@ This workflow is released under the MIT license</string>
 		<key>interface_address</key>
 		<string></string>
 	</dict>
+	<key>variablesdontexport</key>
+	<array/>
 	<key>version</key>
 	<string>1.4.1</string>
 	<key>webaddress</key>
