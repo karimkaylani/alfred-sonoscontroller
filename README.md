@@ -4,6 +4,11 @@
 
 [![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/r5QBNKI.jpg)]()
 
+## Requirements
+
+- Python 3
+- Alfred Version 3 or above
+
 ## Installation
 
 <a href="https://github.com/karimkaylani/alfred-sonoscontroller/releases/latest/download/sonoscontroller.alfredworkflow" target="_blank">Download</a>
