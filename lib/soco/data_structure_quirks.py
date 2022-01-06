@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """This module implements 'quirks' for the DIDL-Lite data structures
 
 A quirk, in this context, means that a specific music service does not follow
@@ -27,8 +25,8 @@ def apply_resource_quirks(resource):
     # At least two music service (Spotify Direct and Amazon in conjunction
     # with Alexa) has been known not to supply the mandatory protocolInfo, so
     # if it is missing supply a dummy one
-    if 'protocolInfo' not in resource.attrib:
-        protocol_info = 'DUMMY_ADDED_BY_QUIRK'
+    if "protocolInfo" not in resource.attrib:
+        protocol_info = "DUMMY_ADDED_BY_QUIRK"
         # For Spotify direct we have a better idea what it should be, since it
         # is included in the main element text
         if resource.text and resource.text.startswith("x-sonos-spotify"):
@@ -38,6 +36,8 @@ def apply_resource_quirks(resource):
             "Resource quirk applied for missing protocolInfo, setting to '%s'",
             protocol_info,
         )
-        resource.set('protocolInfo', protocol_info)
+        resource.set("protocolInfo", protocol_info)
 
+        if not resource.text:
+            resource.text = ""
     return resource

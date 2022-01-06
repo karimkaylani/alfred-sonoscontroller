@@ -1,42 +1,75 @@
-# -*- coding: utf-8 -*-
 # pylint: disable=fixme, protected-access
 """The core module contains the SoCo class that implements
 the main entry to the SoCo functionality
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import datetime
 import logging
 import re
 import socket
 from functools import wraps
+import urllib.parse
 from xml.sax.saxutils import escape
+from xml.parsers.expat import ExpatError
 import warnings
+import xmltodict
 
 import requests
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import ConnectTimeout, ReadTimeout
 
 from . import config
-from .compat import UnicodeType
 from .data_structures import (
-    DidlObject, DidlPlaylistContainer, DidlResource,
-    Queue, to_didl_string
+    DidlObject,
+    DidlPlaylistContainer,
+    DidlResource,
+    Queue,
+    to_didl_string,
 )
+from .cache import Cache
 from .data_structures_entry import from_didl_string
 from .exceptions import (
-    SoCoSlaveException, SoCoUPnPException, NotSupportedException,
+    SoCoSlaveException,
+    SoCoUPnPException,
+    NotSupportedException,
+    SoCoNotVisibleException,
 )
 from .groups import ZoneGroup
 from .music_library import MusicLibrary
 from .services import (
-    DeviceProperties, ContentDirectory, RenderingControl, AVTransport,
-    ZoneGroupTopology, AlarmClock, SystemProperties, MusicServices,
-    zone_group_state_shared_cache, GroupRenderingControl
+    DeviceProperties,
+    ContentDirectory,
+    RenderingControl,
+    AVTransport,
+    ZoneGroupTopology,
+    AlarmClock,
+    SystemProperties,
+    MusicServices,
+    AudioIn,
+    GroupRenderingControl,
 )
-from .utils import (
-    really_utf8, camel_to_underscore, deprecated
-)
+from .utils import really_utf8, camel_to_underscore, deprecated
 from .xml import XML
+
+AUDIO_INPUT_FORMATS = {
+    0: "No input connected",
+    2: "Stereo",
+    7: "Dolby 2.0",
+    18: "Dolby 5.1",
+    21: "No input",
+    22: "No audio",
+    59: "Dolby Atmos",
+    63: "Dolby Atmos",
+    33554434: "PCM 2.0",
+    33554454: "PCM 2.0 no audio",
+    33554488: "Dolby 2.0",
+    33554490: "Dolby Digital Plus 2.0",
+    33554494: "Dolby Multichannel PCM 2.0",
+    84934658: "Multichannel PCM 5.1",
+    84934713: "Dolby 5.1",
+    84934714: "Dolby Digital Plus 5.1",
+}
 
 _LOG = logging.getLogger(__name__)
 
@@ -70,20 +103,21 @@ class _ArgsSingleton(type):
     AssertionError
     >>> assert First('hi') is Second('hi')
     """
+
     _instances = {}
 
     def __call__(cls, *args, **kwargs):
-        key = cls._class_group if hasattr(cls, '_class_group') else cls
+        key = cls._class_group if hasattr(cls, "_class_group") else cls
         if key not in cls._instances:
             cls._instances[key] = {}
         if args not in cls._instances[key]:
-            cls._instances[key][args] = super(_ArgsSingleton, cls).__call__(
-                *args, **kwargs)
+            cls._instances[key][args] = super().__call__(*args, **kwargs)
         return cls._instances[key][args]
 
 
 class _SocoSingletonBase(  # pylint: disable=too-few-public-methods,no-init
-        _ArgsSingleton(str('ArgsSingletonMeta'), (object,), {})):
+    _ArgsSingleton("ArgsSingletonMeta", (object,), {})
+):
 
     """The base class for the SoCo class.
 
@@ -95,14 +129,18 @@ class _SocoSingletonBase(  # pylint: disable=too-few-public-methods,no-init
 
 def only_on_master(function):
     """Decorator that raises SoCoSlaveException on master call on slave."""
+
     @wraps(function)
     def inner_function(self, *args, **kwargs):
         """Master checking inner function."""
         if not self.is_coordinator:
-            message = 'The method or property "{0}" can only be called/used '\
-                'on the coordinator in a group'.format(function.__name__)
+            message = (
+                'The method or property "{}" can only be called/used '
+                "on the coordinator in a group".format(function.__name__)
+            )
             raise SoCoSlaveException(message)
         return function(self, *args, **kwargs)
+
     return inner_function
 
 
@@ -125,16 +163,20 @@ class SoCo(_SocoSingletonBase):
         play_uri
         pause
         stop
+        end_direct_control_session
         seek
         next
         previous
         mute
         volume
         play_mode
+        shuffle
+        repeat
         cross_fade
         ramp_to_volume
         set_relative_volume
         get_current_track_info
+        get_current_media_info
         get_speaker_info
         get_current_transport_info
 
@@ -170,13 +212,27 @@ class SoCo(_SocoSingletonBase):
         is_bridge
         is_coordinator
         is_soundbar
+        surround_enabled
+        is_satellite
+        has_satellites
+        sub_enabled
+        is_subwoofer
+        has_subwoofer
+        channel
         bass
         treble
         loudness
         balance
+        audio_delay
         night_mode
         dialog_mode
+        supports_fixed_volume
+        fixed_volume
+        soundbar_audio_input_format
+        soundbar_audio_input_format_code
+        trueplay
         status_light
+        buttons_enabled
 
     ..  rubric:: Playlists and Favorites
     ..  autosummary::
@@ -198,13 +254,20 @@ class SoCo(_SocoSingletonBase):
     ..  rubric:: Miscellaneous
     ..  autosummary::
 
-        switch_to_line_in
+        music_source
+        music_source_from_uri
         is_playing_radio
-        is_playing_line_in
         is_playing_tv
+        is_playing_line_in
+        switch_to_line_in
         switch_to_tv
+        available_actions
         set_sleep_timer
         get_sleep_timer
+        create_stereo_pair
+        separate_stereo_pair
+        get_battery_info
+        boot_seqnum
 
     .. warning::
 
@@ -227,19 +290,19 @@ class SoCo(_SocoSingletonBase):
 
     """
 
-    _class_group = 'SoCo'
+    _class_group = "SoCo"
 
     # pylint: disable=super-on-old-class
     def __init__(self, ip_address):
         # Note: Creation of a SoCo instance should be as cheap and quick as
         # possible. Do not make any network calls here
-        super(SoCo, self).__init__()
+        super().__init__()
         # Check if ip_address is a valid IPv4 representation.
         # Sonos does not (yet) support IPv6
         try:
             socket.inet_aton(ip_address)
-        except socket.error:
-            raise ValueError("Not a valid IP address string")
+        except OSError as error:
+            raise ValueError("Not a valid IP address string") from error
         #: The speaker's ip address
         self.ip_address = ip_address
         self.speaker_info = {}  # Stores information about the current speaker
@@ -255,29 +318,42 @@ class SoCo(_SocoSingletonBase):
         self.alarmClock = AlarmClock(self)
         self.systemProperties = SystemProperties(self)
         self.musicServices = MusicServices(self)
+        self.audioIn = AudioIn(self)
 
         self.music_library = MusicLibrary(self)
 
         # Some private attributes
         self._all_zones = set()
+        self._boot_seqnum = None
         self._groups = set()
+        self._channel_map = None
+        self._ht_sat_chan_map = None
         self._is_bridge = None
         self._is_coordinator = False
+        self._is_satellite = False
+        self._has_satellites = False
+        self._channel = None
         self._is_soundbar = None
         self._player_name = None
         self._uid = None
         self._household_id = None
         self._visible_zones = set()
-        self._zgs_cache = None
+        self._zgs_cache = Cache(default_timeout=5)
+        self._zgs_result = None
 
         _LOG.debug("Created SoCo instance for ip: %s", ip_address)
 
     def __str__(self):
-        return "<{0} object at ip {1}>".format(
-            self.__class__.__name__, self.ip_address)
+        return "<{} object at ip {}>".format(self.__class__.__name__, self.ip_address)
 
     def __repr__(self):
-        return '{0}("{1}")'.format(self.__class__.__name__, self.ip_address)
+        return '{}("{}")'.format(self.__class__.__name__, self.ip_address)
+
+    @property
+    def boot_seqnum(self):
+        """int: The boot sequence number."""
+        self._parse_zone_group_state()
+        return int(self._boot_seqnum)
 
     @property
     def player_name(self):
@@ -293,11 +369,13 @@ class SoCo(_SocoSingletonBase):
     @player_name.setter
     def player_name(self, playername):
         """Set the speaker's name."""
-        self.deviceProperties.SetZoneAttributes([
-            ('DesiredZoneName', playername),
-            ('DesiredIcon', ''),
-            ('DesiredConfiguration', '')
-        ])
+        self.deviceProperties.SetZoneAttributes(
+            [
+                ("DesiredZoneName", playername),
+                ("DesiredIcon", ""),
+                ("DesiredConfiguration", ""),
+            ]
+        )
 
     @property
     def uid(self):
@@ -336,7 +414,8 @@ class SoCo(_SocoSingletonBase):
         # know the answer. If so, return the cached version
         if self._household_id is None:
             self._household_id = self.deviceProperties.GetHouseholdID()[
-                'CurrentHouseholdID']
+                "CurrentHouseholdID"
+            ]
         return self._household_id
 
     @property
@@ -376,13 +455,65 @@ class SoCo(_SocoSingletonBase):
         return self._is_coordinator
 
     @property
+    def is_satellite(self):
+        """bool: Is this zone a satellite in a home theater setup?"""
+        self._parse_zone_group_state()
+        return self._is_satellite
+
+    @property
+    def has_satellites(self):
+        """bool: Is this zone configured with satellites in a home theater setup?
+
+        Will only return True on the primary device in a home theater configuration.
+        """
+        self._parse_zone_group_state()
+        return self._has_satellites
+
+    @property
+    def is_subwoofer(self):
+        """bool: Is this zone a subwoofer?"""
+        if self.channel == "SW":
+            return True
+        return False
+
+    @property
+    def has_subwoofer(self):
+        """bool: Is this zone configured with a subwoofer?
+
+        Only provides reliable results when called on the soundbar
+        or subwoofer devices if configured in a home theater setup.
+        """
+        self._parse_zone_group_state()
+        channel_map = self._channel_map or self._ht_sat_chan_map
+        if not channel_map:
+            return False
+
+        if ":SW" in channel_map:  # pylint: disable=E1135
+            return True
+        return False
+
+    @property
+    def channel(self):
+        """str: Location of this zone in a home theater or paired configuration.
+
+        Can be one of "LF,RF", "LF", "RF", "LR", "RR", "SW", or None.
+        """
+        self._parse_zone_group_state()
+        # Omit repeated channel entries (e.g., "RF,RF" -> "RF")
+        if self._channel:
+            channels = set(self._channel.split(","))
+            if len(channels) == 1:
+                return channels.pop()
+        return self._channel
+
+    @property
     def is_soundbar(self):
         """bool: Is this zone a soundbar (i.e. has night mode etc.)?"""
         if self._is_soundbar is None:
             if not self.speaker_info:
                 self.get_speaker_info()
 
-            model_name = self.speaker_info['model_name'].lower()
+            model_name = self.speaker_info["model_name"].lower()
             self._is_soundbar = any(model_name.endswith(s) for s in SOUNDBARS)
 
         return self._is_soundbar
@@ -399,12 +530,17 @@ class SoCo(_SocoSingletonBase):
             strange, I know.)
         *   ``'SHUFFLE_NOREPEAT'`` -- Turns on shuffle and turns off
             repeat.
+        *   ``'REPEAT_ONE'`` -- Turns on repeat one and turns off shuffle.
+        *   ``'SHUFFLE_REPEAT_ONE'`` -- Turns on shuffle *and* repeat one. (It's
+            strange, I know.)
 
         """
-        result = self.avTransport.GetTransportSettings([
-            ('InstanceID', 0),
-        ])
-        return result['PlayMode']
+        result = self.avTransport.GetTransportSettings(
+            [
+                ("InstanceID", 0),
+            ]
+        )
+        return result["PlayMode"]
 
     @play_mode.setter
     def play_mode(self, playmode):
@@ -413,10 +549,38 @@ class SoCo(_SocoSingletonBase):
         if playmode not in PLAY_MODES:
             raise KeyError("'%s' is not a valid play mode" % playmode)
 
-        self.avTransport.SetPlayMode([
-            ('InstanceID', 0),
-            ('NewPlayMode', playmode)
-        ])
+        self.avTransport.SetPlayMode([("InstanceID", 0), ("NewPlayMode", playmode)])
+
+    @property
+    def shuffle(self):
+        """bool: The queue's shuffle option.
+
+        True if enabled, False otherwise.
+        """
+        return PLAY_MODES[self.play_mode][0]
+
+    @shuffle.setter
+    def shuffle(self, shuffle):
+        """Set the queue's shuffle option."""
+        repeat = self.repeat
+        self.play_mode = PLAY_MODE_BY_MEANING[(shuffle, repeat)]
+
+    @property
+    def repeat(self):
+        """bool: The queue's repeat option.
+
+        True if enabled, False otherwise.
+
+        Can also be the string ``'ONE'`` for play mode
+        ``'REPEAT_ONE'``.
+        """
+        return PLAY_MODES[self.play_mode][1]
+
+    @repeat.setter
+    def repeat(self, repeat):
+        """Set the queue's repeat option"""
+        shuffle = self.shuffle
+        self.play_mode = PLAY_MODE_BY_MEANING[(shuffle, repeat)]
 
     @property
     @only_on_master  # Only for symmetry with the setter
@@ -426,23 +590,24 @@ class SoCo(_SocoSingletonBase):
         True if enabled, False otherwise
         """
 
-        response = self.avTransport.GetCrossfadeMode([
-            ('InstanceID', 0),
-        ])
-        cross_fade_state = response['CrossfadeMode']
+        response = self.avTransport.GetCrossfadeMode(
+            [
+                ("InstanceID", 0),
+            ]
+        )
+        cross_fade_state = response["CrossfadeMode"]
         return bool(int(cross_fade_state))
 
     @cross_fade.setter
     @only_on_master
     def cross_fade(self, crossfade):
         """Set the speaker's cross fade state."""
-        crossfade_value = '1' if crossfade else '0'
-        self.avTransport.SetCrossfadeMode([
-            ('InstanceID', 0),
-            ('CrossfadeMode', crossfade_value)
-        ])
+        crossfade_value = "1" if crossfade else "0"
+        self.avTransport.SetCrossfadeMode(
+            [("InstanceID", 0), ("CrossfadeMode", crossfade_value)]
+        )
 
-    def ramp_to_volume(self, volume, ramp_type='SLEEP_TIMER_RAMP_TYPE'):
+    def ramp_to_volume(self, volume, ramp_type="SLEEP_TIMER_RAMP_TYPE"):
         """Smoothly change the volume.
 
         There are three ramp types available:
@@ -472,15 +637,17 @@ class SoCo(_SocoSingletonBase):
             int: The ramp time in seconds, rounded down. Note that this does
             not include the wait time.
         """
-        response = self.renderingControl.RampToVolume([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-            ('RampType', ramp_type),
-            ('DesiredVolume', volume),
-            ('ResetVolumeAfter', False),
-            ('ProgramURI', '')
-        ])
-        return int(response['RampTime'])
+        response = self.renderingControl.RampToVolume(
+            [
+                ("InstanceID", 0),
+                ("Channel", "Master"),
+                ("RampType", ramp_type),
+                ("DesiredVolume", volume),
+                ("ResetVolumeAfter", False),
+                ("ProgramURI", ""),
+            ]
+        )
+        return int(response["RampTime"])
 
     def set_relative_volume(self, relative_volume):
         """Adjust the volume up or down by a relative amount.
@@ -493,7 +660,7 @@ class SoCo(_SocoSingletonBase):
         Note that this method is an alternative to using addition and
         subtraction assignment operators (+=, -=) on the `volume` property
         of a `SoCo` instance. These operators perform the same function as
-        `set_relative_volume()` but require two network calls per operation
+        `set_relative_volume` but require two network calls per operation
         instead of one.
 
         Args:
@@ -504,16 +671,14 @@ class SoCo(_SocoSingletonBase):
             int: The new volume setting.
 
         Raises:
-            ValueError: If `relative_volume` cannot be cast as an integer.
+            ValueError: If ``relative_volume`` cannot be cast as an integer.
         """
         relative_volume = int(relative_volume)
         # Sonos will automatically handle out-of-range adjustments
-        response = self.renderingControl.SetRelativeVolume([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-            ('Adjustment', relative_volume)
-        ])
-        return int(response['NewVolume'])
+        response = self.renderingControl.SetRelativeVolume(
+            [("InstanceID", 0), ("Channel", "Master"), ("Adjustment", relative_volume)]
+        )
+        return int(response["NewVolume"])
 
     @only_on_master
     def play_from_queue(self, index, start=True):
@@ -532,19 +697,15 @@ class SoCo(_SocoSingletonBase):
             self.get_speaker_info()
 
         # first, set the queue itself as the source URI
-        uri = 'x-rincon-queue:{0}#0'.format(self.uid)
-        self.avTransport.SetAVTransportURI([
-            ('InstanceID', 0),
-            ('CurrentURI', uri),
-            ('CurrentURIMetaData', '')
-        ])
+        uri = "x-rincon-queue:{}#0".format(self.uid)
+        self.avTransport.SetAVTransportURI(
+            [("InstanceID", 0), ("CurrentURI", uri), ("CurrentURIMetaData", "")]
+        )
 
         # second, set the track number with a seek command
-        self.avTransport.Seek([
-            ('InstanceID', 0),
-            ('Unit', 'TRACK_NR'),
-            ('Target', index + 1)
-        ])
+        self.avTransport.Seek(
+            [("InstanceID", 0), ("Unit", "TRACK_NR"), ("Target", index + 1)]
+        )
 
         # finally, just play what's set if needed
         if start:
@@ -553,22 +714,19 @@ class SoCo(_SocoSingletonBase):
     @only_on_master
     def play(self):
         """Play the currently selected track."""
-        self.avTransport.Play([
-            ('InstanceID', 0),
-            ('Speed', 1)
-        ])
+        self.avTransport.Play([("InstanceID", 0), ("Speed", 1)])
 
     @only_on_master
     # pylint: disable=too-many-arguments
-    def play_uri(self, uri='', meta='', title='', start=True,
-                 force_radio=False):
+    def play_uri(self, uri="", meta="", title="", start=True, force_radio=False):
         """Play a URI.
 
-        Playing a URI will replace what was playing with the stream given by
-        the URI. For some streams at least a title is required as metadata.
-        This can be provided using the `meta` argument or the `title` argument.
-        If the `title` argument is provided minimal metadata will be generated.
-        If `meta` argument is provided the `title` argument is ignored.
+        Playing a URI will replace what was playing with the stream
+        given by the URI. For some streams at least a title is
+        required as metadata.  This can be provided using the ``meta``
+        argument or the ``title`` argument.  If the ``title`` argument
+        is provided minimal metadata will be generated.  If ``meta``
+        argument is provided the ``title`` argument is ignored.
 
         Args:
             uri (str): URI of the stream to be played.
@@ -591,54 +749,55 @@ class SoCo(_SocoSingletonBase):
           Examples: Spotify, Napster, Rhapsody.
 
         How it is displayed is determined by the URI prefix:
-        `x-sonosapi-stream:`, `x-sonosapi-radio:`, `x-rincon-mp3radio:`,
-        `hls-radio:` default to radio or smart radio format depending on the
-        stream. Others default to track format: `x-file-cifs:`, `aac:`,
-        `http:`, `https:`, `x-sonos-spotify:` (used by Spotify),
-        `x-sonosapi-hls-static:` (Amazon Prime),
-        `x-sonos-http:` (Google Play & Napster).
+        ``x-sonosapi-stream:``, ``x-sonosapi-radio:``,
+        ``x-rincon-mp3radio:``, ``hls-radio:`` default to radio or
+        smart radio format depending on the stream. Others default to
+        track format: ``x-file-cifs:``, ``aac:``, ``http:``,
+        ``https:``, ``x-sonos-spotify:`` (used by Spotify),
+        ``x-sonosapi-hls-static:`` (Amazon Prime), ``x-sonos-http:``
+        (Google Play & Napster).
 
         Some URIs that default to track format could be radio streams,
-        typically `http:`, `https:` or `aac:`.
-        To force display and controls to Radio format set `force_radio=True`
+        typically ``http:``, ``https:`` or ``aac:``.  To force display
+        and controls to Radio format set ``force_radio=True``
 
         .. note:: Other URI prefixes exist but are less common.
            If you have information on these please add to this doc string.
 
-        .. note:: A change in Sonos® (as of at least version 6.4.2) means that
-           the devices no longer accepts ordinary `http:` and `https:` URIs for
-           radio stations. This method has the option to replaces these
-           prefixes with the one that Sonos® expects: `x-rincon-mp3radio:` by
-           using the "force_radio=True" parameter.
-           A few streams may fail if not forced to to Radio format.
+        .. note:: A change in Sonos® (as of at least version 6.4.2)
+           means that the devices no longer accepts ordinary ``http:``
+           and ``https:`` URIs for radio stations. This method has the
+           option to replaces these prefixes with the one that Sonos®
+           expects: ``x-rincon-mp3radio:`` by using the
+           "force_radio=True" parameter.  A few streams may fail if
+           not forced to to Radio format.
+
         """
-        if meta == '' and title != '':
-            meta_template = '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements'\
-                '/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '\
-                'xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" '\
-                'xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">'\
-                '<item id="R:0/0/0" parentID="R:0/0" restricted="true">'\
-                '<dc:title>{title}</dc:title><upnp:class>'\
-                'object.item.audioItem.audioBroadcast</upnp:class><desc '\
-                'id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:'\
+        if meta == "" and title != "":
+            meta_template = (
+                '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements'
+                '/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '
+                'xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" '
+                'xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">'
+                '<item id="R:0/0/0" parentID="R:0/0" restricted="true">'
+                "<dc:title>{title}</dc:title><upnp:class>"
+                "object.item.audioItem.audioBroadcast</upnp:class><desc "
+                'id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:'
                 'metadata-1-0/">{service}</desc></item></DIDL-Lite>'
-            tunein_service = 'SA_RINCON65031_'
+            )
+            tunein_service = "SA_RINCON65031_"
             # Radio stations need to have at least a title to play
-            meta = meta_template.format(
-                title=escape(title),
-                service=tunein_service)
+            meta = meta_template.format(title=escape(title), service=tunein_service)
 
         # change uri prefix to force radio style display and commands
         if force_radio:
-            colon = uri.find(':')
+            colon = uri.find(":")
             if colon > 0:
-                uri = 'x-rincon-mp3radio{0}'.format(uri[colon:])
+                uri = "x-rincon-mp3radio{}".format(uri[colon:])
 
-        self.avTransport.SetAVTransportURI([
-            ('InstanceID', 0),
-            ('CurrentURI', uri),
-            ('CurrentURIMetaData', meta)
-        ])
+        self.avTransport.SetAVTransportURI(
+            [("InstanceID", 0), ("CurrentURI", uri), ("CurrentURIMetaData", meta)]
+        )
         # The track is enqueued, now play it if needed
         if start:
             return self.play()
@@ -647,35 +806,68 @@ class SoCo(_SocoSingletonBase):
     @only_on_master
     def pause(self):
         """Pause the currently playing track."""
-        self.avTransport.Pause([
-            ('InstanceID', 0),
-            ('Speed', 1)
-        ])
+        self.avTransport.Pause([("InstanceID", 0), ("Speed", 1)])
 
     @only_on_master
     def stop(self):
         """Stop the currently playing track."""
-        self.avTransport.Stop([
-            ('InstanceID', 0),
-            ('Speed', 1)
-        ])
+        self.avTransport.Stop([("InstanceID", 0), ("Speed", 1)])
 
     @only_on_master
-    def seek(self, timestamp):
-        """Seek to a given timestamp in the current track, specified in the
-        format of HH:MM:SS or H:MM:SS.
+    def end_direct_control_session(self):
+        """Ends all third-party controlled streaming sessions."""
+        self.avTransport.EndDirectControlSession([("InstanceID", 0)])
+
+    @only_on_master
+    def seek(self, position=None, track=None):
+        """Seek to a given position.
+
+        You can seek both a relative position in the current track and a track
+        number in the queue.
+        It is even possible to seek to a tuple or dict containing the absolute
+        position (relative pos. and track nr.)::
+
+            t = ('0:00:00', 0)
+            player.seek(*t)
+            d = {'position': '0:00:00', 'track': 0}
+            player.seek(**d)
+
+        Args:
+            position (str): The desired timestamp in the current track,
+                specified in the format of HH:MM:SS or H:MM:SS
+            track (int): The (zero-based) track index in the queue
 
         Raises:
-            ValueError: if the given timestamp is invalid.
-        """
-        if not re.match(r'^[0-9][0-9]?:[0-9][0-9]:[0-9][0-9]$', timestamp):
-            raise ValueError('invalid timestamp, use HH:MM:SS format')
+            ValueError: If neither position nor track are specified.
+            SoCoUPnPException: UPnP Error 701 if seeking is not supported,
+                UPnP Error 711 if the target is invalid.
 
-        self.avTransport.Seek([
-            ('InstanceID', 0),
-            ('Unit', 'REL_TIME'),
-            ('Target', timestamp)
-        ])
+        Note:
+            The 'track' parameter can only be used if the queue is currently
+            playing. If not, use :py:meth:`play_from_queue`.
+
+        This is currently faster than :py:meth:`play_from_queue` if already
+        using the queue, as it does not reinstate the queue.
+
+        If speaker is already playing it will continue to play after
+        seek. If paused it will remain paused.
+        """
+
+        if track is None and position is None:
+            raise ValueError("No position or track information given")
+
+        if track is not None:
+            self.avTransport.Seek(
+                [("InstanceID", 0), ("Unit", "TRACK_NR"), ("Target", track + 1)]
+            )
+
+        if position is not None:
+            if not re.match(r"^[0-9][0-9]?:[0-9][0-9]:[0-9][0-9]$", position):
+                raise ValueError("invalid timestamp, use HH:MM:SS format")
+
+            self.avTransport.Seek(
+                [("InstanceID", 0), ("Unit", "REL_TIME"), ("Target", position)]
+            )
 
     @only_on_master
     def next(self):
@@ -687,10 +879,7 @@ class SoCo(_SocoSingletonBase):
         code will likely be returned (since Pandora has limits on how many
         songs can be skipped).
         """
-        self.avTransport.Next([
-            ('InstanceID', 0),
-            ('Speed', 1)
-        ])
+        self.avTransport.Next([("InstanceID", 0), ("Speed", 1)])
 
     @only_on_master
     def previous(self):
@@ -701,10 +890,7 @@ class SoCo(_SocoSingletonBase):
         code (error code 701) if the Sonos is streaming Pandora since you can't
         go back on tracks.
         """
-        self.avTransport.Previous([
-            ('InstanceID', 0),
-            ('Speed', 1)
-        ])
+        self.avTransport.Previous([("InstanceID", 0), ("Speed", 1)])
 
     @property
     def mute(self):
@@ -713,22 +899,19 @@ class SoCo(_SocoSingletonBase):
         True if muted, False otherwise.
         """
 
-        response = self.renderingControl.GetMute([
-            ('InstanceID', 0),
-            ('Channel', 'Master')
-        ])
-        mute_state = response['CurrentMute']
+        response = self.renderingControl.GetMute(
+            [("InstanceID", 0), ("Channel", "Master")]
+        )
+        mute_state = response["CurrentMute"]
         return bool(int(mute_state))
 
     @mute.setter
     def mute(self, mute):
         """Mute (or unmute) the speaker."""
-        mute_value = '1' if mute else '0'
-        self.renderingControl.SetMute([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-            ('DesiredMute', mute_value)
-        ])
+        mute_value = "1" if mute else "0"
+        self.renderingControl.SetMute(
+            [("InstanceID", 0), ("Channel", "Master"), ("DesiredMute", mute_value)]
+        )
 
     @property
     def volume(self):
@@ -737,11 +920,13 @@ class SoCo(_SocoSingletonBase):
         An integer between 0 and 100.
         """
 
-        response = self.renderingControl.GetVolume([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-        ])
-        volume = response['CurrentVolume']
+        response = self.renderingControl.GetVolume(
+            [
+                ("InstanceID", 0),
+                ("Channel", "Master"),
+            ]
+        )
+        volume = response["CurrentVolume"]
         return int(volume)
 
     @volume.setter
@@ -749,11 +934,9 @@ class SoCo(_SocoSingletonBase):
         """Set the speaker's volume."""
         volume = int(volume)
         volume = max(0, min(volume, 100))  # Coerce in range
-        self.renderingControl.SetVolume([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-            ('DesiredVolume', volume)
-        ])
+        self.renderingControl.SetVolume(
+            [("InstanceID", 0), ("Channel", "Master"), ("DesiredVolume", volume)]
+        )
 
     @property
     def bass(self):
@@ -762,11 +945,13 @@ class SoCo(_SocoSingletonBase):
         An integer between -10 and 10.
         """
 
-        response = self.renderingControl.GetBass([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-        ])
-        bass = response['CurrentBass']
+        response = self.renderingControl.GetBass(
+            [
+                ("InstanceID", 0),
+                ("Channel", "Master"),
+            ]
+        )
+        bass = response["CurrentBass"]
         return int(bass)
 
     @bass.setter
@@ -774,10 +959,7 @@ class SoCo(_SocoSingletonBase):
         """Set the speaker's bass."""
         bass = int(bass)
         bass = max(-10, min(bass, 10))  # Coerce in range
-        self.renderingControl.SetBass([
-            ('InstanceID', 0),
-            ('DesiredBass', bass)
-        ])
+        self.renderingControl.SetBass([("InstanceID", 0), ("DesiredBass", bass)])
 
     @property
     def treble(self):
@@ -786,11 +968,13 @@ class SoCo(_SocoSingletonBase):
         An integer between -10 and 10.
         """
 
-        response = self.renderingControl.GetTreble([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-        ])
-        treble = response['CurrentTreble']
+        response = self.renderingControl.GetTreble(
+            [
+                ("InstanceID", 0),
+                ("Channel", "Master"),
+            ]
+        )
+        treble = response["CurrentTreble"]
         return int(treble)
 
     @treble.setter
@@ -798,14 +982,11 @@ class SoCo(_SocoSingletonBase):
         """Set the speaker's treble."""
         treble = int(treble)
         treble = max(-10, min(treble, 10))  # Coerce in range
-        self.renderingControl.SetTreble([
-            ('InstanceID', 0),
-            ('DesiredTreble', treble)
-        ])
+        self.renderingControl.SetTreble([("InstanceID", 0), ("DesiredTreble", treble)])
 
     @property
     def loudness(self):
-        """bool: The Sonos speaker's loudness compensation.
+        """bool: The speaker's loudness compensation.
 
         True if on, False otherwise.
 
@@ -813,22 +994,94 @@ class SoCo(_SocoSingletonBase):
         Wikipedia: https://en.wikipedia.org/wiki/Loudness
 
         """
-        response = self.renderingControl.GetLoudness([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-        ])
+        response = self.renderingControl.GetLoudness(
+            [
+                ("InstanceID", 0),
+                ("Channel", "Master"),
+            ]
+        )
         loudness = response["CurrentLoudness"]
         return bool(int(loudness))
 
     @loudness.setter
     def loudness(self, loudness):
         """Switch on/off the speaker's loudness compensation."""
-        loudness_value = '1' if loudness else '0'
-        self.renderingControl.SetLoudness([
-            ('InstanceID', 0),
-            ('Channel', 'Master'),
-            ('DesiredLoudness', loudness_value)
-        ])
+        loudness_value = "1" if loudness else "0"
+        self.renderingControl.SetLoudness(
+            [
+                ("InstanceID", 0),
+                ("Channel", "Master"),
+                ("DesiredLoudness", loudness_value),
+            ]
+        )
+
+    @property
+    def surround_enabled(self):
+        """bool: Reports if the home theater surround speakers are enabled.
+
+        Should only be called on the primary device in a home theater setup.
+
+        True if on, False if off, None if not supported.
+        """
+        if not self.is_soundbar:
+            return None
+
+        response = self.renderingControl.GetEQ(
+            [("InstanceID", 0), ("EQType", "SurroundEnable")]
+        )
+        return bool(int(response["CurrentValue"]))
+
+    @surround_enabled.setter
+    def surround_enabled(self, enable):
+        """Enable/disable the connected surround speakers.
+
+        :param enable: Enable or disable surround speakers
+        :type enable: bool
+        """
+        if not self.is_soundbar:
+            message = "This device does not support surrounds"
+            raise NotSupportedException(message)
+
+        self.renderingControl.SetEQ(
+            [
+                ("InstanceID", 0),
+                ("EQType", "SurroundEnable"),
+                ("DesiredValue", int(enable)),
+            ]
+        )
+
+    @property
+    def sub_enabled(self):
+        """bool: Reports if the subwoofer is enabled.
+
+        True if on, False if off, None if not supported.
+        """
+        if not self.has_subwoofer:
+            return None
+
+        response = self.renderingControl.GetEQ(
+            [("InstanceID", 0), ("EQType", "SubEnable")]
+        )
+        return bool(int(response["CurrentValue"]))
+
+    @sub_enabled.setter
+    def sub_enabled(self, enable):
+        """Enable/disable the connected subwoofer.
+
+        :param enable: Enable or disable the subwoofer
+        :type enable: bool
+        """
+        if not self.has_subwoofer:
+            message = "This group does not have a subwoofer"
+            raise NotSupportedException(message)
+
+        self.renderingControl.SetEQ(
+            [
+                ("InstanceID", 0),
+                ("EQType", "SubEnable"),
+                ("DesiredValue", int(enable)),
+            ]
+        )
 
     @property
     def balance(self):
@@ -842,16 +1095,20 @@ class SoCo(_SocoSingletonBase):
             right channel at zero volume.
         """
 
-        response_lf = self.renderingControl.GetVolume([
-            ('InstanceID', 0),
-            ('Channel', 'LF'),
-        ])
-        response_rf = self.renderingControl.GetVolume([
-            ('InstanceID', 0),
-            ('Channel', 'RF'),
-        ])
-        volume_lf = response_lf['CurrentVolume']
-        volume_rf = response_rf['CurrentVolume']
+        response_lf = self.renderingControl.GetVolume(
+            [
+                ("InstanceID", 0),
+                ("Channel", "LF"),
+            ]
+        )
+        response_rf = self.renderingControl.GetVolume(
+            [
+                ("InstanceID", 0),
+                ("Channel", "RF"),
+            ]
+        )
+        volume_lf = response_lf["CurrentVolume"]
+        volume_rf = response_rf["CurrentVolume"]
         return int(volume_lf), int(volume_rf)
 
     @balance.setter
@@ -862,16 +1119,51 @@ class SoCo(_SocoSingletonBase):
         right = int(right)
         left = max(0, min(left, 100))  # Coerce in range
         right = max(0, min(right, 100))  # Coerce in range
-        self.renderingControl.SetVolume([
-            ('InstanceID', 0),
-            ('Channel', 'LF'),
-            ('DesiredVolume', left)
-        ])
-        self.renderingControl.SetVolume([
-            ('InstanceID', 0),
-            ('Channel', 'RF'),
-            ('DesiredVolume', right)
-        ])
+        self.renderingControl.SetVolume(
+            [("InstanceID", 0), ("Channel", "LF"), ("DesiredVolume", left)]
+        )
+        self.renderingControl.SetVolume(
+            [("InstanceID", 0), ("Channel", "RF"), ("DesiredVolume", right)]
+        )
+
+    @property
+    def audio_delay(self):
+        """int: The TV Dialog Sync audio delay.
+
+        Returns the current value or None if not supported.
+        """
+        if not self.is_soundbar:
+            return None
+
+        response = self.renderingControl.GetEQ(
+            [("InstanceID", 0), ("EQType", "AudioDelay")]
+        )
+        return int(response["CurrentValue"])
+
+    @audio_delay.setter
+    def audio_delay(self, delay):
+        """Control the delay added to incoming audio sources. Also called
+        TV Dialog Sync in Home Theater settings.
+
+        :param delay: Delay to apply to audio in the range of 0 to 5
+        :type delay: int
+        :raises NotSupportedException: If device does not support audio delay.
+        :raises ValueError: If provided delay is not an acceptable value.
+        """
+        if not self.is_soundbar:
+            message = "This device does not support audio delay"
+            raise NotSupportedException(message)
+
+        if not 0 <= delay <= 5:
+            raise ValueError("invalid value, must be integer between 0 and 5 inclusive")
+
+        self.renderingControl.SetEQ(
+            [
+                ("InstanceID", 0),
+                ("EQType", "AudioDelay"),
+                ("DesiredValue", int(delay)),
+            ]
+        )
 
     @property
     def night_mode(self):
@@ -882,11 +1174,10 @@ class SoCo(_SocoSingletonBase):
         if not self.is_soundbar:
             return None
 
-        response = self.renderingControl.GetEQ([
-            ('InstanceID', 0),
-            ('EQType', 'NightMode')
-        ])
-        return bool(int(response['CurrentValue']))
+        response = self.renderingControl.GetEQ(
+            [("InstanceID", 0), ("EQType", "NightMode")]
+        )
+        return bool(int(response["CurrentValue"]))
 
     @night_mode.setter
     def night_mode(self, night_mode):
@@ -898,29 +1189,30 @@ class SoCo(_SocoSingletonBase):
         night mode.
         """
         if not self.is_soundbar:
-            message = 'This device does not support night mode'
+            message = "This device does not support night mode"
             raise NotSupportedException(message)
 
-        self.renderingControl.SetEQ([
-            ('InstanceID', 0),
-            ('EQType', 'NightMode'),
-            ('DesiredValue', int(night_mode))
-        ])
+        self.renderingControl.SetEQ(
+            [
+                ("InstanceID", 0),
+                ("EQType", "NightMode"),
+                ("DesiredValue", int(night_mode)),
+            ]
+        )
 
     @property
     def dialog_mode(self):
-        """bool: Get the Sonos speaker's dialog mode.
+        """bool: The speaker's dialog mode.
 
         True if on, False if off, None if not supported.
         """
         if not self.is_soundbar:
             return None
 
-        response = self.renderingControl.GetEQ([
-            ('InstanceID', 0),
-            ('EQType', 'DialogLevel')
-        ])
-        return bool(int(response['CurrentValue']))
+        response = self.renderingControl.GetEQ(
+            [("InstanceID", 0), ("EQType", "DialogLevel")]
+        )
+        return bool(int(response["CurrentValue"]))
 
     @dialog_mode.setter
     def dialog_mode(self, dialog_mode):
@@ -932,14 +1224,157 @@ class SoCo(_SocoSingletonBase):
         dialog mode.
         """
         if not self.is_soundbar:
-            message = 'This device does not support dialog mode'
+            message = "This device does not support dialog mode"
             raise NotSupportedException(message)
 
-        self.renderingControl.SetEQ([
-            ('InstanceID', 0),
-            ('EQType', 'DialogLevel'),
-            ('DesiredValue', int(dialog_mode))
-        ])
+        self.renderingControl.SetEQ(
+            [
+                ("InstanceID", 0),
+                ("EQType", "DialogLevel"),
+                ("DesiredValue", int(dialog_mode)),
+            ]
+        )
+
+    @property
+    def dialog_level(self):
+        """Convenience wrapper for dialog_mode getter to match raw Sonos API."""
+        return self.dialog_mode
+
+    @dialog_level.setter
+    def dialog_level(self, dialog_level):
+        """Convenience wrapper for dialog_mode setter to match raw Sonos API."""
+        self.dialog_mode = dialog_level
+
+    @property
+    def trueplay(self):
+        """bool: Whether Trueplay is enabled on this device.
+        True if on, False if off.
+
+        Devices that do not support Trueplay, or which do not have
+        a current Trueplay calibration, will return `None` on getting
+        the property, and  raise a `NotSupportedException` when
+        setting the property.
+
+        Can only be set on visible devices. Attempting to set on non-visible
+        devices will raise a `SoCoNotVisibleException`.
+        """
+        response = self.renderingControl.GetRoomCalibrationStatus([("InstanceID", 0)])
+        if response["RoomCalibrationAvailable"] == "0":
+            return None
+        else:
+            return response["RoomCalibrationEnabled"] == "1"
+
+    @trueplay.setter
+    def trueplay(self, trueplay):
+        """Toggle the device's TruePlay setting. Only available to
+        Sonos speakers, not the Connect, Amp, etc., and only available to
+        speakers that have a current Trueplay calibration.
+
+        :param trueplay: Enable or disable Trueplay.
+        :type trueplay: bool
+        :raises NotSupportedException: If the device does not support
+        Trueplay or doesn't have a current calibration.
+        :raises SoCoNotVisibleException: If the device is not visible.
+        """
+        response = self.renderingControl.GetRoomCalibrationStatus([("InstanceID", 0)])
+        if response["RoomCalibrationAvailable"] == "0":
+            raise NotSupportedException
+
+        if not self.is_visible:
+            raise SoCoNotVisibleException
+
+        trueplay_value = "1" if trueplay else "0"
+        self.renderingControl.SetRoomCalibrationStatus(
+            [
+                ("InstanceID", 0),
+                ("RoomCalibrationEnabled", trueplay_value),
+            ]
+        )
+
+    @property
+    def soundbar_audio_input_format_code(self):
+        """Return audio input format code as reported by the device.
+
+        Returns None when the device is not a soundbar.
+
+        While the variable is available on non-soundbar devices,
+        it is likely always 0 for devices without audio inputs.
+
+        See also :func:`soundbar_audio_input_format` for obtaining a
+        human-readable description of the format.
+        """
+        if not self.is_soundbar:
+            return None
+
+        response = self.deviceProperties.GetZoneInfo()
+
+        return int(response["HTAudioIn"])
+
+    @property
+    def soundbar_audio_input_format(self):
+        """Return a string presentation of the audio input format.
+
+        Returns None when the device is not a soundbar.
+        Otherwise, this will return the string presentation of the currently
+        active sound format (e.g., "Dolby 5.1" or "No input")
+
+        See also :func:`soundbar_audio_input_format_code` for the raw value.
+        """
+        if not self.is_soundbar:
+            return None
+
+        format_code = self.soundbar_audio_input_format_code
+
+        if format_code not in AUDIO_INPUT_FORMATS:
+            error_message = "Unknown audio input format: {}".format(format_code)
+            logging.debug(error_message)
+            return error_message
+
+        return AUDIO_INPUT_FORMATS[format_code]
+
+    @property
+    def supports_fixed_volume(self):
+        """bool: Whether the device supports fixed volume output."""
+
+        response = self.renderingControl.GetSupportsOutputFixed([("InstanceID", 0)])
+        return response["CurrentSupportsFixed"] == "1"
+
+    @property
+    def fixed_volume(self):
+        """bool: The device's fixed volume output setting.
+
+        True if on, False if off. Only applicable to certain
+        Sonos devices (Connect and Port at the time of writing).
+        All other devices always return False.
+
+        Attempting to set this property for a non-applicable
+        device will raise a `NotSupportedException`.
+        """
+
+        response = self.renderingControl.GetOutputFixed([("InstanceID", 0)])
+        return response["CurrentFixed"] == "1"
+
+    @fixed_volume.setter
+    def fixed_volume(self, fixed_volume):
+        """Switch on/off the device's fixed volume output setting.
+
+        Only applicable to certain Sonos devices.
+
+        :param fixed_volume: Enable or disable fixed volume output mode.
+        :type fixed_volume: bool
+        :raises NotSupportedException: If the device does not support
+        fixed volume output mode.
+        """
+
+        try:
+            self.renderingControl.SetOutputFixed(
+                [
+                    ("InstanceID", 0),
+                    ("DesiredFixed", "1" if fixed_volume else "0"),
+                ]
+            )
+        except SoCoUPnPException as error:
+            raise NotSupportedException from error
 
     def _parse_zone_group_state(self):
         """The Zone Group State contains a lot of useful information.
@@ -947,45 +1382,45 @@ class SoCo(_SocoSingletonBase):
         Retrieve and parse it, and populate the relevant properties.
         """
 
-# zoneGroupTopology.GetZoneGroupState()['ZoneGroupState'] returns XML like
-# this:
-#
-# <ZoneGroups>
-#   <ZoneGroup Coordinator="RINCON_000XXX1400" ID="RINCON_000XXXX1400:0">
-#     <ZoneGroupMember
-#         BootSeq="33"
-#         Configuration="1"
-#         Icon="x-rincon-roomicon:zoneextender"
-#         Invisible="1"
-#         IsZoneBridge="1"
-#         Location="http://192.168.1.100:1400/xml/device_description.xml"
-#         MinCompatibleVersion="22.0-00000"
-#         SoftwareVersion="24.1-74200"
-#         UUID="RINCON_000ZZZ1400"
-#         ZoneName="BRIDGE"/>
-#   </ZoneGroup>
-#   <ZoneGroup Coordinator="RINCON_000XXX1400" ID="RINCON_000XXX1400:46">
-#     <ZoneGroupMember
-#         BootSeq="44"
-#         Configuration="1"
-#         Icon="x-rincon-roomicon:living"
-#         Location="http://192.168.1.101:1400/xml/device_description.xml"
-#         MinCompatibleVersion="22.0-00000"
-#         SoftwareVersion="24.1-74200"
-#         UUID="RINCON_000XXX1400"
-#         ZoneName="Living Room"/>
-#     <ZoneGroupMember
-#         BootSeq="52"
-#         Configuration="1"
-#         Icon="x-rincon-roomicon:kitchen"
-#         Location="http://192.168.1.102:1400/xml/device_description.xml"
-#         MinCompatibleVersion="22.0-00000"
-#         SoftwareVersion="24.1-74200"
-#         UUID="RINCON_000YYY1400"
-#         ZoneName="Kitchen"/>
-#   </ZoneGroup>
-# </ZoneGroups>
-#
+        # zoneGroupTopology.GetZoneGroupState()['ZoneGroupState'] returns XML like
+        # this:
+        #
+        # <ZoneGroups>
+        #   <ZoneGroup Coordinator="RINCON_000XXX1400" ID="RINCON_000XXXX1400:0">
+        #     <ZoneGroupMember
+        #         BootSeq="33"
+        #         Configuration="1"
+        #         Icon="x-rincon-roomicon:zoneextender"
+        #         Invisible="1"
+        #         IsZoneBridge="1"
+        #         Location="http://192.168.1.100:1400/xml/device_description.xml"
+        #         MinCompatibleVersion="22.0-00000"
+        #         SoftwareVersion="24.1-74200"
+        #         UUID="RINCON_000ZZZ1400"
+        #         ZoneName="BRIDGE"/>
+        #   </ZoneGroup>
+        #   <ZoneGroup Coordinator="RINCON_000XXX1400" ID="RINCON_000XXX1400:46">
+        #     <ZoneGroupMember
+        #         BootSeq="44"
+        #         Configuration="1"
+        #         Icon="x-rincon-roomicon:living"
+        #         Location="http://192.168.1.101:1400/xml/device_description.xml"
+        #         MinCompatibleVersion="22.0-00000"
+        #         SoftwareVersion="24.1-74200"
+        #         UUID="RINCON_000XXX1400"
+        #         ZoneName="Living Room"/>
+        #     <ZoneGroupMember
+        #         BootSeq="52"
+        #         Configuration="1"
+        #         Icon="x-rincon-roomicon:kitchen"
+        #         Location="http://192.168.1.102:1400/xml/device_description.xml"
+        #         MinCompatibleVersion="22.0-00000"
+        #         SoftwareVersion="24.1-74200"
+        #         UUID="RINCON_000YYY1400"
+        #         ZoneName="Kitchen"/>
+        #   </ZoneGroup>
+        # </ZoneGroups>
+        #
 
         def parse_zone_group_member(member_element):
             """Parse a ZoneGroupMember or Satellite element from Zone Group
@@ -996,16 +1431,28 @@ class SoCo(_SocoSingletonBase):
             # been created, and useful if they haven't. We can then
             # update various properties for that instance.
             member_attribs = member_element.attrib
-            ip_addr = member_attribs['Location'].\
-                split('//')[1].split(':')[0]
+            ip_addr = member_attribs["Location"].split("//")[1].split(":")[0]
             zone = config.SOCO_CLASS(ip_addr)
+            # share our cache
+            zone._zgs_cache = self._zgs_cache
             # uid doesn't change, but it's not harmful to (re)set it, in case
             # the zone is as yet unseen.
-            zone._uid = member_attribs['UUID']
-            zone._player_name = member_attribs['ZoneName']
+            zone._uid = member_attribs["UUID"]
+            zone._player_name = member_attribs["ZoneName"]
+            zone._boot_seqnum = member_attribs["BootSeq"]
+            zone._channel_map = member_attribs.get("ChannelMapSet")
+            zone._ht_sat_chan_map = member_attribs.get("HTSatChanMapSet")
+            if zone._channel_map:
+                for channel in zone._channel_map.split(";"):
+                    if channel.startswith(zone._uid):
+                        zone._channel = channel.split(":")[-1]
+            if zone._ht_sat_chan_map:
+                for channel in zone._ht_sat_chan_map.split(";"):
+                    if channel.startswith(zone._uid):
+                        zone._channel = channel.split(":")[-1]
             # add the zone to the set of all members, and to the set
             # of visible members if appropriate
-            is_visible = (member_attribs.get('Invisible') != '1')
+            is_visible = member_attribs.get("Invisible") != "1"
             if is_visible:
                 self._visible_zones.add(zone)
             self._all_zones.add(zone)
@@ -1015,25 +1462,30 @@ class SoCo(_SocoSingletonBase):
         # Maintain a private cache. If the zgt has not changed, there is no
         # need to repeat all the XML parsing. In addition, switch on network
         # caching for a short interval (5 secs).
-        zgs = self.zoneGroupTopology.GetZoneGroupState(
-            cache_timeout=5)['ZoneGroupState']
-        if zgs == self._zgs_cache:
+        zgs = self.zoneGroupTopology.GetZoneGroupState(cache=self._zgs_cache)[
+            "ZoneGroupState"
+        ]
+        if zgs == self._zgs_result:
             return
-        self._zgs_cache = zgs
-        tree = XML.fromstring(zgs.encode('utf-8'))
+        self._zgs_result = zgs
+        tree = XML.fromstring(zgs.encode("utf-8"))
         # Empty the set of all zone_groups
         self._groups.clear()
         # and the set of all members
         self._all_zones.clear()
         self._visible_zones.clear()
+        # Compatibility fallback for pre-10.1 firmwares
+        # where a "ZoneGroups" element is not used
+        tree = tree.find("ZoneGroups") or tree
         # Loop over each ZoneGroup Element
-        for group_element in tree.find('ZoneGroups').findall('ZoneGroup'):
-            coordinator_uid = group_element.attrib['Coordinator']
-            group_uid = group_element.attrib['ID']
+        for group_element in tree.findall("ZoneGroup"):
+            coordinator_uid = group_element.attrib["Coordinator"]
+            group_uid = group_element.attrib["ID"]
             group_coordinator = None
             members = set()
-            for member_element in group_element.findall('ZoneGroupMember'):
+            for member_element in group_element.findall("ZoneGroupMember"):
                 zone = parse_zone_group_member(member_element)
+                zone._is_satellite = False
                 # Perform extra processing relevant to direct zone group
                 # members
                 #
@@ -1047,14 +1499,19 @@ class SoCo(_SocoSingletonBase):
                 # is_bridge doesn't change, but it does no real harm to
                 # set/reset it here, just in case the zone has not been seen
                 # before
-                zone._is_bridge = (
-                    member_element.attrib.get('IsZoneBridge') == '1')
+                zone._is_bridge = member_element.attrib.get("IsZoneBridge") == "1"
                 # add the zone to the members for this group
                 members.add(zone)
                 # Loop over Satellite elements if present, and process as for
                 # ZoneGroup elements
-                for satellite_element in member_element.findall('Satellite'):
+                satellite_elements = member_element.findall("Satellite")
+                if satellite_elements:
+                    zone._has_satellites = True
+                else:
+                    zone._has_satellites = False
+                for satellite_element in satellite_elements:
                     zone = parse_zone_group_member(satellite_element)
+                    zone._is_satellite = True
                     # Assume a satellite can't be a bridge or coordinator, so
                     # no need to check.
                     #
@@ -1123,13 +1580,15 @@ class SoCo(_SocoSingletonBase):
 
     def join(self, master):
         """Join this speaker to another "master" speaker."""
-        self.avTransport.SetAVTransportURI([
-            ('InstanceID', 0),
-            ('CurrentURI', 'x-rincon:{0}'.format(master.uid)),
-            ('CurrentURIMetaData', '')
-        ])
-        zone_group_state_shared_cache.clear()
-        self._parse_zone_group_state()
+
+        self.avTransport.SetAVTransportURI(
+            [
+                ("InstanceID", 0),
+                ("CurrentURI", "x-rincon:{}".format(master.uid)),
+                ("CurrentURIMetaData", ""),
+            ]
+        )
+        self._zgs_cache.clear()
 
     def unjoin(self):
         """Remove this speaker from a group.
@@ -1139,14 +1598,47 @@ class SoCo(_SocoSingletonBase):
         returns ok.
         """
 
-        self.avTransport.BecomeCoordinatorOfStandaloneGroup([
-            ('InstanceID', 0)
-        ])
-        zone_group_state_shared_cache.clear()
-        self._parse_zone_group_state()
+        self.avTransport.BecomeCoordinatorOfStandaloneGroup([("InstanceID", 0)])
+        self._zgs_cache.clear()
+
+    def create_stereo_pair(self, rh_slave_speaker):
+        """Create a stereo pair.
+
+        This speaker becomes the master, left-hand speaker of the stereo
+        pair. The ``rh_slave_speaker`` becomes the right-hand speaker.
+        Note that this operation will succeed on dissimilar speakers, unlike
+        when using the official Sonos apps.
+
+        Args:
+            rh_slave_speaker (SoCo): The speaker that will be added as
+                the right-hand, slave speaker of the stereo pair.
+
+        Raises:
+            SoCoUPnPException: if either speaker is already part of a
+                stereo pair.
+        """
+        # The pairing operation must be applied to the speaker that will
+        # become the master (the left-hand speaker of the pair).
+        # Note that if either speaker is part of a group, the call will
+        # succeed.
+        param = self.uid + ":LF,LF;" + rh_slave_speaker.uid + ":RF,RF"
+        self.deviceProperties.AddBondedZones([("ChannelMapSet", param)])
+
+    def separate_stereo_pair(self):
+        """Separate a stereo pair.
+
+        This can be called on either the master (left-hand) speaker, or on the
+        slave (right-hand) speaker, to create two independent zones.
+
+        Raises:
+            SoCoUPnPException: if the speaker is not a member of a stereo pair.
+        """
+        self.deviceProperties.RemoveBondedZones(
+            [("ChannelMapSet", ""), ("KeepGrouped", "0")]
+        )
 
     def switch_to_line_in(self, source=None):
-        """ Switch the speaker's input to line-in.
+        """Switch the speaker's input to line-in.
 
         Args:
             source (SoCo): The speaker whose line-in should be played.
@@ -1157,50 +1649,80 @@ class SoCo(_SocoSingletonBase):
         else:
             uid = self.uid
 
-        self.avTransport.SetAVTransportURI([
-            ('InstanceID', 0),
-            ('CurrentURI', 'x-rincon-stream:{0}'.format(uid)),
-            ('CurrentURIMetaData', '')
-        ])
+        self.avTransport.SetAVTransportURI(
+            [
+                ("InstanceID", 0),
+                ("CurrentURI", "x-rincon-stream:{}".format(uid)),
+                ("CurrentURIMetaData", ""),
+            ]
+        )
 
     @property
     def is_playing_radio(self):
         """bool: Is the speaker playing radio?"""
-        response = self.avTransport.GetPositionInfo([
-            ('InstanceID', 0),
-            ('Channel', 'Master')
-        ])
-        track_uri = response['TrackURI']
-        return re.match(r'^x-rincon-mp3radio:', track_uri) is not None
+        return self.music_source == MUSIC_SRC_RADIO
 
     @property
     def is_playing_line_in(self):
         """bool: Is the speaker playing line-in?"""
-        response = self.avTransport.GetPositionInfo([
-            ('InstanceID', 0),
-            ('Channel', 'Master')
-        ])
-        track_uri = response['TrackURI']
-        return re.match(r'^x-rincon-stream:', track_uri) is not None
+        return self.music_source == MUSIC_SRC_LINE_IN
 
     @property
     def is_playing_tv(self):
         """bool: Is the playbar speaker input from TV?"""
-        response = self.avTransport.GetPositionInfo([
-            ('InstanceID', 0),
-            ('Channel', 'Master')
-        ])
-        track_uri = response['TrackURI']
-        return re.match(r'^x-sonos-htastream:', track_uri) is not None
+        return self.music_source == MUSIC_SRC_TV
+
+    @staticmethod
+    def music_source_from_uri(uri):
+        """Determine a music source from a URI.
+
+        Arguments:
+            uri (str) : The URI representing the music source
+
+        Returns:
+            str: The current source of music.
+
+        Possible return values are:
+
+        *   ``'NONE'`` -- speaker has no music to play.
+        *   ``'LIBRARY'`` -- speaker is playing queued titles from the music
+            library.
+        *   ``'RADIO'`` -- speaker is playing radio.
+        *   ``'WEB_FILE'`` -- speaker is playing a music file via http/https.
+        *   ``'LINE_IN'`` -- speaker is playing music from line-in.
+        *   ``'TV'`` -- speaker is playing input from TV.
+        *   ``'AIRPLAY'`` -- speaker is playing from AirPlay.
+        *   ``'UNKNOWN'`` -- any other input.
+
+        The strings above can be imported as ``MUSIC_SRC_LIBRARY``,
+        ``MUSIC_SRC_RADIO``, etc.
+        """
+        for regex, source in SOURCES.items():
+            if re.match(regex, uri) is not None:
+                return source
+        return MUSIC_SRC_UNKNOWN
+
+    @property
+    def music_source(self):
+        """str: The current music source (radio, TV, line-in, etc.).
+
+        Possible return values are the same as used in `music_source_from_uri()`.
+        """
+        response = self.avTransport.GetPositionInfo(
+            [("InstanceID", 0), ("Channel", "Master")]
+        )
+        return self.music_source_from_uri(response["TrackURI"])
 
     def switch_to_tv(self):
         """Switch the playbar speaker's input to TV."""
 
-        self.avTransport.SetAVTransportURI([
-            ('InstanceID', 0),
-            ('CurrentURI', 'x-sonos-htastream:{0}:spdif'.format(self.uid)),
-            ('CurrentURIMetaData', '')
-        ])
+        self.avTransport.SetAVTransportURI(
+            [
+                ("InstanceID", 0),
+                ("CurrentURI", "x-sonos-htastream:{}:spdif".format(self.uid)),
+                ("CurrentURIMetaData", ""),
+            ]
+        )
 
     @property
     def status_light(self):
@@ -1216,10 +1738,48 @@ class SoCo(_SocoSingletonBase):
     @status_light.setter
     def status_light(self, led_on):
         """Switch on/off the speaker's status light."""
-        led_state = 'On' if led_on else 'Off'
-        self.deviceProperties.SetLEDState([
-            ('DesiredLEDState', led_state),
-        ])
+        led_state = "On" if led_on else "Off"
+        self.deviceProperties.SetLEDState(
+            [
+                ("DesiredLEDState", led_state),
+            ]
+        )
+
+    @property
+    def buttons_enabled(self):
+        """bool: Whether the control buttons on the device are enabled.
+
+        `True` if the control buttons are enabled, `False` if disabled.
+
+        This property can only be set on visible speakers, and will enable
+        or disable the buttons for all speakers in any bonded set (e.g., a
+        stereo pair). Attempting to set it on invisible speakers
+        (e.g., the RH speaker of a stereo pair) will raise a
+        `SoCoNotVisibleException`.
+        """
+        lock_state = self.deviceProperties.GetButtonLockState()[
+            "CurrentButtonLockState"
+        ]
+        return lock_state == "Off"
+
+    @buttons_enabled.setter
+    def buttons_enabled(self, enabled):
+        """Enable or disable the device's control buttons.
+
+        Args:
+            bool: True to enable the buttons, False to disable.
+
+        Raises:
+            SoCoNotVisibleException: If the speaker is not visible.
+        """
+        if not self.is_visible:
+            raise SoCoNotVisibleException
+        lock_state = "Off" if enabled else "On"
+        self.deviceProperties.SetButtonLockState(
+            [
+                ("DesiredButtonLockState", lock_state),
+            ]
+        )
 
     def get_current_track_info(self):
         """Get information about the currently playing track.
@@ -1240,69 +1800,131 @@ class SoCo(_SocoSingletonBase):
             this speaker was playing.
 
         """
-        response = self.avTransport.GetPositionInfo([
-            ('InstanceID', 0),
-            ('Channel', 'Master')
-        ])
+        response = self.avTransport.GetPositionInfo(
+            [("InstanceID", 0), ("Channel", "Master")]
+        )
 
-        track = {'title': '', 'artist': '', 'album': '', 'album_art': '',
-                 'position': ''}
-        track['playlist_position'] = response['Track']
-        track['duration'] = response['TrackDuration']
-        track['uri'] = response['TrackURI']
-        track['position'] = response['RelTime']
+        track = {
+            "title": "",
+            "artist": "",
+            "album": "",
+            "album_art": "",
+            "position": "",
+        }
+        track["playlist_position"] = response["Track"]
+        track["duration"] = response["TrackDuration"]
+        track["uri"] = response["TrackURI"]
+        track["position"] = response["RelTime"]
 
-        metadata = response['TrackMetaData']
+        metadata = response["TrackMetaData"]
         # Store the entire Metadata entry in the track, this can then be
         # used if needed by the client to restart a given URI
-        track['metadata'] = metadata
-        # Duration seems to be '0:00:00' when listening to radio
-        if metadata != '' and track['duration'] == '0:00:00':
-            metadata = XML.fromstring(really_utf8(metadata))
-            # Try parse trackinfo
-            trackinfo = metadata.findtext('.//{urn:schemas-rinconnetworks-com:'
-                                          'metadata-1-0/}streamContent') or ''
-            index = trackinfo.find(' - ')
+        track["metadata"] = metadata
+
+        def _parse_radio_metadata(metadata):
+            """Try to parse trackinfo from radio metadata."""
+            radio_track = {}
+            trackinfo = (
+                metadata.findtext(
+                    ".//{urn:schemas-rinconnetworks-com:" "metadata-1-0/}streamContent"
+                )
+                or ""
+            )
+            index = trackinfo.find(" - ")
 
             if index > -1:
-                track['artist'] = trackinfo[:index]
-                track['title'] = trackinfo[index + 3:]
+                radio_track["artist"] = trackinfo[:index].strip()
+                radio_track["title"] = trackinfo[index + 3 :].strip()
+            elif "TYPE=SNG|" in trackinfo:
+                # Examples from services:
+                #  Apple Music radio:
+                #   "TYPE=SNG|TITLE Couleurs|ARTIST M83|ALBUM Saturdays = Youth"
+                #  SiriusXM:
+                #   "BR P|TYPE=SNG|TITLE 7.15.17 LA|ARTIST Eagles|ALBUM "
+                tags = dict([p.split(" ", 1) for p in trackinfo.split("|") if " " in p])
+                if tags.get("TITLE"):
+                    radio_track["title"] = tags["TITLE"]
+                if tags.get("ARTIST"):
+                    radio_track["artist"] = tags["ARTIST"]
+                if tags.get("ALBUM"):
+                    radio_track["album"] = tags["ALBUM"]
             else:
                 # Might find some kind of title anyway in metadata
-                track['title'] = metadata.findtext('.//{http://purl.org/dc/'
-                                                   'elements/1.1/}title')
-                if not track['title']:
-                    track['title'] = trackinfo
+                title = metadata.findtext(
+                    ".//{http://purl.org/dc/" "elements/1.1/}title"
+                )
+                # Avoid using URIs as the title
+                if title and (
+                    title in track["uri"] or title in urllib.parse.unquote(track["uri"])
+                ):
+                    radio_track["title"] = trackinfo
+                else:
+                    radio_track["title"] = title
+
+            return radio_track
+
+        # Duration seems to be '0:00:00' when listening to radio
+        if metadata != "" and track["duration"] == "0:00:00":
+            metadata = XML.fromstring(really_utf8(metadata))
+            track.update(_parse_radio_metadata(metadata))
 
         # If the speaker is playing from the line-in source, querying for track
         # metadata will return "NOT_IMPLEMENTED".
-        elif metadata not in ('', 'NOT_IMPLEMENTED', None):
+        elif metadata not in ("", "NOT_IMPLEMENTED", None):
             # Track metadata is returned in DIDL-Lite format
             metadata = XML.fromstring(really_utf8(metadata))
-            md_title = metadata.findtext(
-                './/{http://purl.org/dc/elements/1.1/}title')
+            md_title = metadata.findtext(".//{http://purl.org/dc/elements/1.1/}title")
             md_artist = metadata.findtext(
-                './/{http://purl.org/dc/elements/1.1/}creator')
+                ".//{http://purl.org/dc/elements/1.1/}creator"
+            )
             md_album = metadata.findtext(
-                './/{urn:schemas-upnp-org:metadata-1-0/upnp/}album')
+                ".//{urn:schemas-upnp-org:metadata-1-0/upnp/}album"
+            )
 
-            track['title'] = ""
+            track["title"] = ""
             if md_title:
-                track['title'] = md_title
-            track['artist'] = ""
+                track["title"] = md_title
+            track["artist"] = ""
             if md_artist:
-                track['artist'] = md_artist
-            track['album'] = ""
+                track["artist"] = md_artist
+            track["album"] = ""
             if md_album:
-                track['album'] = md_album
+                track["album"] = md_album
 
             album_art_url = metadata.findtext(
-                './/{urn:schemas-upnp-org:metadata-1-0/upnp/}albumArtURI')
+                ".//{urn:schemas-upnp-org:metadata-1-0/upnp/}albumArtURI"
+            )
             if album_art_url is not None:
-                track['album_art'] = \
-                    self.music_library.build_album_art_full_uri(album_art_url)
+                track["album_art"] = self.music_library.build_album_art_full_uri(
+                    album_art_url
+                )
 
         return track
+
+    def get_current_media_info(self):
+        """Get information about the currently playing media.
+
+        Returns:
+            dict: A dictionary containing information about the currently
+            playing media: uri, channel.
+
+        If we're unable to return data for a field, we'll return an empty
+        string.
+        """
+        response = self.avTransport.GetMediaInfo([("InstanceID", 0)])
+        media = {"uri": "", "channel": ""}
+
+        media["uri"] = response["CurrentURI"]
+
+        metadata = response.get("CurrentURIMetaData")
+        if metadata:
+            metadata = XML.fromstring(really_utf8(metadata))
+            md_title = metadata.findtext(".//{http://purl.org/dc/elements/1.1/}title")
+
+            if md_title:
+                media["channel"] = md_title
+
+        return media
 
     def get_speaker_info(self, refresh=False, timeout=None):
         """Get information about the Sonos speaker.
@@ -1311,7 +1933,7 @@ class SoCo(_SocoSingletonBase):
             refresh(bool): Refresh the speaker info cache.
             timeout: How long to wait for the server to send
                 data before giving up, as a float, or a
-                `(connect timeout, read timeout)` tuple
+                ``(connect timeout, read timeout)`` tuple
                 e.g. (3, 5). Default is no timeout.
 
         Returns:
@@ -1321,40 +1943,48 @@ class SoCo(_SocoSingletonBase):
         if self.speaker_info and refresh is False:
             return self.speaker_info
         else:
-            response = requests.get('http://' + self.ip_address +
-                                    ':1400/xml/device_description.xml',
-                                    timeout=timeout)
+            response = requests.get(
+                "http://" + self.ip_address + ":1400/xml/device_description.xml",
+                timeout=timeout,
+            )
             dom = XML.fromstring(response.content)
 
-        device = dom.find('{urn:schemas-upnp-org:device-1-0}device')
+        device = dom.find("{urn:schemas-upnp-org:device-1-0}device")
         if device is not None:
-            self.speaker_info['zone_name'] = device.findtext(
-                '{urn:schemas-upnp-org:device-1-0}roomName')
-
-            # no zone icon in device_description.xml -> player icon
-            self.speaker_info['player_icon'] = device.findtext(
-                '{urn:schemas-upnp-org:device-1-0}iconList/'
-                '{urn:schemas-upnp-org:device-1-0}icon/'
-                '{urn:schemas-upnp-org:device-1-0}url'
+            self.speaker_info["zone_name"] = device.findtext(
+                "{urn:schemas-upnp-org:device-1-0}roomName"
             )
 
-            self.speaker_info['uid'] = self.uid
-            self.speaker_info['serial_number'] = device.findtext(
-                '{urn:schemas-upnp-org:device-1-0}serialNum')
-            self.speaker_info['software_version'] = device.findtext(
-                '{urn:schemas-upnp-org:device-1-0}softwareVersion')
-            self.speaker_info['hardware_version'] = device.findtext(
-                '{urn:schemas-upnp-org:device-1-0}hardwareVersion')
-            self.speaker_info['model_number'] = device.findtext(
-                '{urn:schemas-upnp-org:device-1-0}modelNumber')
-            self.speaker_info['model_name'] = device.findtext(
-                '{urn:schemas-upnp-org:device-1-0}modelName')
-            self.speaker_info['display_version'] = device.findtext(
-                '{urn:schemas-upnp-org:device-1-0}displayVersion')
+            # no zone icon in device_description.xml -> player icon
+            self.speaker_info["player_icon"] = device.findtext(
+                "{urn:schemas-upnp-org:device-1-0}iconList/"
+                "{urn:schemas-upnp-org:device-1-0}icon/"
+                "{urn:schemas-upnp-org:device-1-0}url"
+            )
+
+            self.speaker_info["uid"] = self.uid
+            self.speaker_info["serial_number"] = device.findtext(
+                "{urn:schemas-upnp-org:device-1-0}serialNum"
+            )
+            self.speaker_info["software_version"] = device.findtext(
+                "{urn:schemas-upnp-org:device-1-0}softwareVersion"
+            )
+            self.speaker_info["hardware_version"] = device.findtext(
+                "{urn:schemas-upnp-org:device-1-0}hardwareVersion"
+            )
+            self.speaker_info["model_number"] = device.findtext(
+                "{urn:schemas-upnp-org:device-1-0}modelNumber"
+            )
+            self.speaker_info["model_name"] = device.findtext(
+                "{urn:schemas-upnp-org:device-1-0}modelName"
+            )
+            self.speaker_info["display_version"] = device.findtext(
+                "{urn:schemas-upnp-org:device-1-0}displayVersion"
+            )
 
             # no mac address - extract from serial number
-            mac = self.speaker_info['serial_number'].split(':')[0]
-            self.speaker_info['mac_address'] = mac
+            mac = self.speaker_info["serial_number"].split(":")[0]
+            self.speaker_info["mac_address"] = mac
 
             return self.speaker_info
         return None
@@ -1374,23 +2004,41 @@ class SoCo(_SocoSingletonBase):
         This allows us to know if speaker is playing or not. Don't know other
         states of CurrentTransportStatus and CurrentSpeed.
         """
-        response = self.avTransport.GetTransportInfo([
-            ('InstanceID', 0),
-        ])
+        response = self.avTransport.GetTransportInfo(
+            [
+                ("InstanceID", 0),
+            ]
+        )
 
         playstate = {
-            'current_transport_status': '',
-            'current_transport_state': '',
-            'current_transport_speed': ''
+            "current_transport_status": "",
+            "current_transport_state": "",
+            "current_transport_speed": "",
         }
 
-        playstate['current_transport_state'] = \
-            response['CurrentTransportState']
-        playstate['current_transport_status'] = \
-            response['CurrentTransportStatus']
-        playstate['current_transport_speed'] = response['CurrentSpeed']
+        playstate["current_transport_state"] = response["CurrentTransportState"]
+        playstate["current_transport_status"] = response["CurrentTransportStatus"]
+        playstate["current_transport_speed"] = response["CurrentSpeed"]
 
         return playstate
+
+    @property
+    @only_on_master
+    def available_actions(self):
+        """The transport actions that are currently available on the
+        speaker.
+
+        :returns: list: A list of strings representing the available actions, such as
+                    ['Set', 'Stop', 'Play'].
+
+        Possible list items are: 'Set', 'Stop', 'Pause', 'Play',
+        'Next', 'Previous', 'SeekTime', 'SeekTrackNr'.
+        """
+        result = self.avTransport.GetCurrentTransportActions([("InstanceID", 0)])
+        actions = result["Actions"]
+        # The actions might look like 'X_DLNA_SeekTime', but we only want the
+        # last part
+        return [action.split("_")[-1] for action in actions.split(", ")]
 
     def get_queue(self, start=0, max_items=100, full_album_art_uri=False):
         """Get information about the queue.
@@ -1401,22 +2049,24 @@ class SoCo(_SocoSingletonBase):
             IP address
         :returns: A :py:class:`~.soco.data_structures.Queue` object
 
-        This method is heavly based on Sam Soffes (aka soffes) ruby
+        This method is heavily based on Sam Soffes (aka soffes) ruby
         implementation
         """
         queue = []
-        response = self.contentDirectory.Browse([
-            ('ObjectID', 'Q:0'),
-            ('BrowseFlag', 'BrowseDirectChildren'),
-            ('Filter', '*'),
-            ('StartingIndex', start),
-            ('RequestedCount', max_items),
-            ('SortCriteria', '')
-        ])
-        result = response['Result']
+        response = self.contentDirectory.Browse(
+            [
+                ("ObjectID", "Q:0"),
+                ("BrowseFlag", "BrowseDirectChildren"),
+                ("Filter", "*"),
+                ("StartingIndex", start),
+                ("RequestedCount", max_items),
+                ("SortCriteria", ""),
+            ]
+        )
+        result = response["Result"]
 
         metadata = {}
-        for tag in ['NumberReturned', 'TotalMatches', 'UpdateID']:
+        for tag in ["NumberReturned", "TotalMatches", "UpdateID"]:
             metadata[camel_to_underscore(tag)] = int(response[tag])
 
         # I'm not sure this necessary (any more). Even with an empty queue,
@@ -1438,36 +2088,36 @@ class SoCo(_SocoSingletonBase):
     @property
     def queue_size(self):
         """int: Size of the queue."""
-        response = self.contentDirectory.Browse([
-            ('ObjectID', 'Q:0'),
-            ('BrowseFlag', 'BrowseMetadata'),
-            ('Filter', '*'),
-            ('StartingIndex', 0),
-            ('RequestedCount', 1),
-            ('SortCriteria', '')
-        ])
-        dom = XML.fromstring(really_utf8(response['Result']))
+        response = self.contentDirectory.Browse(
+            [
+                ("ObjectID", "Q:0"),
+                ("BrowseFlag", "BrowseMetadata"),
+                ("Filter", "*"),
+                ("StartingIndex", 0),
+                ("RequestedCount", 1),
+                ("SortCriteria", ""),
+            ]
+        )
+        dom = XML.fromstring(really_utf8(response["Result"]))
 
         queue_size = None
-        container = dom.find(
-            '{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}container')
+        container = dom.find("{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}container")
         if container is not None:
-            child_count = container.get('childCount')
+            child_count = container.get("childCount")
             if child_count is not None:
                 queue_size = int(child_count)
 
         return queue_size
 
     def get_sonos_playlists(self, *args, **kwargs):
-        """Convenience method for
-        `get_music_library_information('sonos_playlists')`.
+        """Convenience method for calling
+        ``soco.music_library.get_music_library_information('sonos_playlists')``
 
-        Refer to the docstring for that method
+        Refer to the docstring for that method: `get_music_library_information`
 
         """
-        args = tuple(['sonos_playlists'] + list(args))
-        return self.music_library.get_music_library_information(*args,
-                                                                **kwargs)
+        args = tuple(["sonos_playlists"] + list(args))
+        return self.music_library.get_music_library_information(*args, **kwargs)
 
     @only_on_master
     def add_uri_to_queue(self, uri, position=0, as_next=False):
@@ -1478,7 +2128,7 @@ class SoCo(_SocoSingletonBase):
         # FIXME: The res.protocol_info should probably represent the mime type
         # etc of the uri. But this seems OK.
         res = [DidlResource(uri=uri, protocol_info="x-rincon-playlist:*:*:*")]
-        item = DidlObject(resources=res, title='', parent_id='', item_id='')
+        item = DidlObject(resources=res, title="", parent_id="", item_id="")
         return self.add_to_queue(item, position, as_next)
 
     @only_on_master
@@ -1491,20 +2141,22 @@ class SoCo(_SocoSingletonBase):
             position (int): The index (1-based) at which the URI should be
                 added. Default is 0 (add URI at the end of the queue).
             as_next (bool): Whether this URI should be played as the next
-                track in shuffle mode. This only works if `play_mode=SHUFFLE`.
+                track in shuffle mode. This only works if ``play_mode=SHUFFLE``.
 
         Returns:
             int: The index of the new item in the queue.
         """
         metadata = to_didl_string(queueable_item)
-        response = self.avTransport.AddURIToQueue([
-            ('InstanceID', 0),
-            ('EnqueuedURI', queueable_item.resources[0].uri),
-            ('EnqueuedURIMetaData', metadata),
-            ('DesiredFirstTrackNumberEnqueued', position),
-            ('EnqueueAsNext', int(as_next))
-        ])
-        qnumber = response['FirstTrackNumberEnqueued']
+        response = self.avTransport.AddURIToQueue(
+            [
+                ("InstanceID", 0),
+                ("EnqueuedURI", queueable_item.resources[0].uri),
+                ("EnqueuedURIMetaData", metadata),
+                ("DesiredFirstTrackNumberEnqueued", position),
+                ("EnqueueAsNext", int(as_next)),
+            ]
+        )
+        qnumber = response["FirstTrackNumberEnqueued"]
         return int(qnumber)
 
     def add_multiple_to_queue(self, items, container=None):
@@ -1519,26 +2171,28 @@ class SoCo(_SocoSingletonBase):
             container_uri = container.resources[0].uri
             container_metadata = to_didl_string(container)
         else:
-            container_uri = ''  # Sonos seems to accept this as well
-            container_metadata = ''  # pylint: disable=redefined-variable-type
+            container_uri = ""  # Sonos seems to accept this as well
+            container_metadata = ""  # pylint: disable=redefined-variable-type
 
         chunk_size = 16  # With each request, we can only add 16 items
         item_list = list(items)  # List for slicing
         for index in range(0, len(item_list), chunk_size):
-            chunk = item_list[index:index + chunk_size]
-            uris = ' '.join([item.resources[0].uri for item in chunk])
-            uri_metadata = ' '.join([to_didl_string(item) for item in chunk])
-            self.avTransport.AddMultipleURIsToQueue([
-                ('InstanceID', 0),
-                ('UpdateID', 0),
-                ('NumberOfURIs', len(chunk)),
-                ('EnqueuedURIs', uris),
-                ('EnqueuedURIsMetaData', uri_metadata),
-                ('ContainerURI', container_uri),
-                ('ContainerMetaData', container_metadata),
-                ('DesiredFirstTrackNumberEnqueued', 0),
-                ('EnqueueAsNext', 0)
-            ])
+            chunk = item_list[index : index + chunk_size]
+            uris = " ".join([item.resources[0].uri for item in chunk])
+            uri_metadata = " ".join([to_didl_string(item) for item in chunk])
+            self.avTransport.AddMultipleURIsToQueue(
+                [
+                    ("InstanceID", 0),
+                    ("UpdateID", 0),
+                    ("NumberOfURIs", len(chunk)),
+                    ("EnqueuedURIs", uris),
+                    ("EnqueuedURIsMetaData", uri_metadata),
+                    ("ContainerURI", container_uri),
+                    ("ContainerMetaData", container_metadata),
+                    ("DesiredFirstTrackNumberEnqueued", 0),
+                    ("EnqueueAsNext", 0),
+                ]
+            )
 
     @only_on_master
     def remove_from_queue(self, index):
@@ -1549,65 +2203,75 @@ class SoCo(_SocoSingletonBase):
             index (int): The (0-based) index of the track to remove
         """
         # TODO: what do these parameters actually do?
-        updid = '0'
-        objid = 'Q:0/' + str(index + 1)
-        self.avTransport.RemoveTrackFromQueue([
-            ('InstanceID', 0),
-            ('ObjectID', objid),
-            ('UpdateID', updid),
-        ])
+        updid = "0"
+        objid = "Q:0/" + str(index + 1)
+        self.avTransport.RemoveTrackFromQueue(
+            [
+                ("InstanceID", 0),
+                ("ObjectID", objid),
+                ("UpdateID", updid),
+            ]
+        )
 
     @only_on_master
     def clear_queue(self):
         """Remove all tracks from the queue."""
-        self.avTransport.RemoveAllTracksFromQueue([
-            ('InstanceID', 0),
-        ])
+        self.avTransport.RemoveAllTracksFromQueue(
+            [
+                ("InstanceID", 0),
+            ]
+        )
 
-    @deprecated('0.13', "soco.music_library.get_favorite_radio_shows", '0.15')
+    @deprecated("0.13", "soco.music_library.get_favorite_radio_shows", "0.15", True)
     def get_favorite_radio_shows(self, start=0, max_items=100):
         """Get favorite radio shows from Sonos' Radio app.
 
         Returns:
             dict: A dictionary containing the total number of favorites, the
             number of favorites returned, and the actual list of favorite radio
-            shows, represented as a dictionary with `title` and `uri` keys.
+            shows, represented as a dictionary with ``'title'`` and ``'uri'``
+            keys.
 
         Depending on what you're building, you'll want to check to see if the
         total number of favorites is greater than the amount you
-        requested (`max_items`), if it is, use `start` to page through and
+        requested (``max_items``), if it is, use ``start`` to page through and
         get the entire list of favorites.
         """
-        message = 'The output type of this method will probably change in '\
-                  'the future to use SoCo data structures'
+        message = (
+            "The output type of this method will probably change in "
+            "the future to use SoCo data structures"
+        )
         warnings.warn(message, stacklevel=2)
         return self.__get_favorites(RADIO_SHOWS, start, max_items)
 
-    @deprecated('0.13', "soco.music_library.get_favorite_radio_stations",
-                '0.15')
+    @deprecated("0.13", "soco.music_library.get_favorite_radio_stations", "0.15", True)
     def get_favorite_radio_stations(self, start=0, max_items=100):
         """Get favorite radio stations from Sonos' Radio app.
 
         See :meth:`get_favorite_radio_shows` for return type and remarks.
         """
-        message = 'The output type of this method will probably change in '\
-                  'the future to use SoCo data structures'
+        message = (
+            "The output type of this method will probably change in "
+            "the future to use SoCo data structures"
+        )
         warnings.warn(message, stacklevel=2)
         return self.__get_favorites(RADIO_STATIONS, start, max_items)
 
-    @deprecated('0.13', "soco.music_library.get_sonos_favorites", '0.15')
+    @deprecated("0.13", "soco.music_library.get_sonos_favorites", "0.15", True)
     def get_sonos_favorites(self, start=0, max_items=100):
         """Get Sonos favorites.
 
         See :meth:`get_favorite_radio_shows` for return type and remarks.
         """
-        message = 'The output type of this method will probably change in '\
-                  'the future to use SoCo data structures'
+        message = (
+            "The output type of this method will probably change in "
+            "the future to use SoCo data structures"
+        )
         warnings.warn(message, stacklevel=2)
         return self.__get_favorites(SONOS_FAVORITES, start, max_items)
 
     def __get_favorites(self, favorite_type, start=0, max_items=100):
-        """ Helper method for `get_favorite_radio_*` methods.
+        """Helper method for `get_favorite_radio_*` methods.
 
         Args:
             favorite_type (str): Specify either `RADIO_STATIONS` or
@@ -1620,41 +2284,50 @@ class SoCo(_SocoSingletonBase):
         if favorite_type not in (RADIO_SHOWS, RADIO_STATIONS):
             favorite_type = SONOS_FAVORITES
 
-        response = self.contentDirectory.Browse([
-            ('ObjectID',
-             'FV:2' if favorite_type is SONOS_FAVORITES
-             else 'R:0/{0}'.format(favorite_type)),
-            ('BrowseFlag', 'BrowseDirectChildren'),
-            ('Filter', '*'),
-            ('StartingIndex', start),
-            ('RequestedCount', max_items),
-            ('SortCriteria', '')
-        ])
+        response = self.contentDirectory.Browse(
+            [
+                (
+                    "ObjectID",
+                    "FV:2"
+                    if favorite_type is SONOS_FAVORITES
+                    else "R:0/{}".format(favorite_type),
+                ),
+                ("BrowseFlag", "BrowseDirectChildren"),
+                ("Filter", "*"),
+                ("StartingIndex", start),
+                ("RequestedCount", max_items),
+                ("SortCriteria", ""),
+            ]
+        )
         result = {}
         favorites = []
-        results_xml = response['Result']
+        results_xml = response["Result"]
 
-        if results_xml != '':
+        if results_xml != "":
             # Favorites are returned in DIDL-Lite format
             metadata = XML.fromstring(really_utf8(results_xml))
 
             for item in metadata.findall(
-                    '{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}container'
-                    if favorite_type == RADIO_SHOWS else
-                    '{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}item'):
+                "{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}container"
+                if favorite_type == RADIO_SHOWS
+                else "{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}item"
+            ):
                 favorite = {}
-                favorite['title'] = item.findtext(
-                    '{http://purl.org/dc/elements/1.1/}title')
-                favorite['uri'] = item.findtext(
-                    '{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}res')
+                favorite["title"] = item.findtext(
+                    "{http://purl.org/dc/elements/1.1/}title"
+                )
+                favorite["uri"] = item.findtext(
+                    "{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}res"
+                )
                 if favorite_type == SONOS_FAVORITES:
-                    favorite['meta'] = item.findtext(
-                        '{urn:schemas-rinconnetworks-com:metadata-1-0/}resMD')
+                    favorite["meta"] = item.findtext(
+                        "{urn:schemas-rinconnetworks-com:metadata-1-0/}resMD"
+                    )
                 favorites.append(favorite)
 
-        result['total'] = response['TotalMatches']
-        result['returned'] = len(favorites)
-        result['favorites'] = favorites
+        result["total"] = response["TotalMatches"]
+        result["returned"] = len(favorites)
+        result["favorites"] = favorites
 
         return result
 
@@ -1666,20 +2339,23 @@ class SoCo(_SocoSingletonBase):
 
         :rtype: :py:class:`~.soco.data_structures.DidlPlaylistContainer`
         """
-        response = self.avTransport.CreateSavedQueue([
-            ('InstanceID', 0),
-            ('Title', title),
-            ('EnqueuedURI', ''),
-            ('EnqueuedURIMetaData', ''),
-        ])
+        response = self.avTransport.CreateSavedQueue(
+            [
+                ("InstanceID", 0),
+                ("Title", title),
+                ("EnqueuedURI", ""),
+                ("EnqueuedURIMetaData", ""),
+            ]
+        )
 
-        item_id = response['AssignedObjectID']
-        obj_id = item_id.split(':', 2)[1]
-        uri = "file:///jffs/settings/savedqueues.rsq#{0}".format(obj_id)
+        item_id = response["AssignedObjectID"]
+        obj_id = item_id.split(":", 2)[1]
+        uri = "file:///jffs/settings/savedqueues.rsq#{}".format(obj_id)
 
         res = [DidlResource(uri=uri, protocol_info="x-rincon-playlist:*:*:*")]
         return DidlPlaylistContainer(
-            resources=res, title=title, parent_id='SQ:', item_id=item_id)
+            resources=res, title=title, parent_id="SQ:", item_id=item_id
+        )
 
     @only_on_master
     # pylint: disable=invalid-name
@@ -1694,17 +2370,16 @@ class SoCo(_SocoSingletonBase):
         # Note: probably same as Queue service method SaveAsSonosPlaylist
         # but this has not been tested.  This method is what the
         # controller uses.
-        response = self.avTransport.SaveQueue([
-            ('InstanceID', 0),
-            ('Title', title),
-            ('ObjectID', '')
-        ])
-        item_id = response['AssignedObjectID']
-        obj_id = item_id.split(':', 2)[1]
-        uri = "file:///jffs/settings/savedqueues.rsq#{0}".format(obj_id)
+        response = self.avTransport.SaveQueue(
+            [("InstanceID", 0), ("Title", title), ("ObjectID", "")]
+        )
+        item_id = response["AssignedObjectID"]
+        obj_id = item_id.split(":", 2)[1]
+        uri = "file:///jffs/settings/savedqueues.rsq#{}".format(obj_id)
         res = [DidlResource(uri=uri, protocol_info="x-rincon-playlist:*:*:*")]
         return DidlPlaylistContainer(
-            resources=res, title=title, parent_id='SQ:', item_id=item_id)
+            resources=res, title=title, parent_id="SQ:", item_id=item_id
+        )
 
     @only_on_master
     def remove_sonos_playlist(self, sonos_playlist):
@@ -1722,8 +2397,8 @@ class SoCo(_SocoSingletonBase):
                 object.
 
         """
-        object_id = getattr(sonos_playlist, 'item_id', sonos_playlist)
-        return self.contentDirectory.DestroyObject([('ObjectID', object_id)])
+        object_id = getattr(sonos_playlist, "item_id", sonos_playlist)
+        return self.contentDirectory.DestroyObject([("ObjectID", object_id)])
 
     def add_item_to_sonos_playlist(self, queueable_item, sonos_playlist):
         """Adds a queueable item to a Sonos' playlist.
@@ -1734,26 +2409,27 @@ class SoCo(_SocoSingletonBase):
                 which the item should be added
         """
         # Get the update_id for the playlist
-        response, _ = self.music_library._music_lib_search(
-            sonos_playlist.item_id, 0, 1)
-        update_id = response['UpdateID']
+        response, _ = self.music_library._music_lib_search(sonos_playlist.item_id, 0, 1)
+        update_id = response["UpdateID"]
 
         # Form the metadata for queueable_item
         metadata = to_didl_string(queueable_item)
 
         # Make the request
-        self.avTransport.AddURIToSavedQueue([
-            ('InstanceID', 0),
-            ('UpdateID', update_id),
-            ('ObjectID', sonos_playlist.item_id),
-            ('EnqueuedURI', queueable_item.resources[0].uri),
-            ('EnqueuedURIMetaData', metadata),
-            # 2 ** 32 - 1 = 4294967295, this field has always this value. Most
-            # likely, playlist positions are represented as a 32 bit uint and
-            # this is therefore the largest index possible. Asking to add at
-            # this index therefore probably amounts to adding it "at the end"
-            ('AddAtIndex', 4294967295)
-        ])
+        self.avTransport.AddURIToSavedQueue(
+            [
+                ("InstanceID", 0),
+                ("UpdateID", update_id),
+                ("ObjectID", sonos_playlist.item_id),
+                ("EnqueuedURI", queueable_item.resources[0].uri),
+                ("EnqueuedURIMetaData", metadata),
+                # 2 ** 32 - 1 = 4294967295, this field has always this value. Most
+                # likely, playlist positions are represented as a 32 bit uint and
+                # this is therefore the largest index possible. Asking to add at
+                # this index therefore probably amounts to adding it "at the end"
+                ("AddAtIndex", 4294967295),
+            ]
+        )
 
     @only_on_master
     def set_sleep_timer(self, sleep_time_seconds):
@@ -1775,23 +2451,27 @@ class SoCo(_SocoSingletonBase):
         # useful feature, while None means cancel the current timer
         try:
             if sleep_time_seconds is None:
-                sleep_time = ''
+                sleep_time = ""
             else:
-                sleep_time = format(
-                    datetime.timedelta(seconds=int(sleep_time_seconds))
-                )
-            self.avTransport.ConfigureSleepTimer([
-                ('InstanceID', 0),
-                ('NewSleepTimerDuration', sleep_time),
-            ])
+                sleep_time = format(datetime.timedelta(seconds=int(sleep_time_seconds)))
+            self.avTransport.ConfigureSleepTimer(
+                [
+                    ("InstanceID", 0),
+                    ("NewSleepTimerDuration", sleep_time),
+                ]
+            )
         except SoCoUPnPException as err:
-            if 'Error 402 received' in str(err):
-                raise ValueError('invalid sleep_time_seconds, must be integer \
-                    value between 0 and 86399 inclusive or None')
+            if "Error 402 received" in str(err):
+                raise ValueError(
+                    "invalid sleep_time_seconds, must be integer \
+                    value between 0 and 86399 inclusive or None"
+                ) from err
             raise
-        except ValueError:
-            raise ValueError('invalid sleep_time_seconds, must be integer \
-                value between 0 and 86399 inclusive or None')
+        except ValueError as error:
+            raise ValueError(
+                "invalid sleep_time_seconds, must be integer \
+                value between 0 and 86399 inclusive or None"
+            ) from error
 
     @only_on_master
     def get_sleep_timer(self):
@@ -1801,20 +2481,19 @@ class SoCo(_SocoSingletonBase):
             int or NoneType: Number of seconds left in timer. If there is no
                 sleep timer currently set it will return None.
         """
-        resp = self.avTransport.GetRemainingSleepTimerDuration([
-            ('InstanceID', 0),
-        ])
-        if resp['RemainingSleepTimerDuration']:
-            times = resp['RemainingSleepTimerDuration'].split(':')
-            return (int(times[0]) * 3600 +
-                    int(times[1]) * 60 +
-                    int(times[2]))
+        resp = self.avTransport.GetRemainingSleepTimerDuration(
+            [
+                ("InstanceID", 0),
+            ]
+        )
+        if resp["RemainingSleepTimerDuration"]:
+            times = resp["RemainingSleepTimerDuration"].split(":")
+            return int(times[0]) * 3600 + int(times[1]) * 60 + int(times[2])
         else:
             return None
 
     @only_on_master
-    def reorder_sonos_playlist(self, sonos_playlist, tracks, new_pos,
-                               update_id=0):
+    def reorder_sonos_playlist(self, sonos_playlist, tracks, new_pos, update_id=0):
         """Reorder and/or Remove tracks in a Sonos playlist.
 
         The underlying call is quite complex as it can both move a track
@@ -1883,51 +2562,59 @@ class SoCo(_SocoSingletonBase):
 
         Returns:
             dict: Which contains 3 elements: change, length and update_id.
-                Change in size between original playlist and the resulting
-                playlist, the length of resulting playlist, and the new
-                update_id.
+            Change in size between original playlist and the resulting
+            playlist, the length of resulting playlist, and the new
+            update_id.
 
         Raises:
             SoCoUPnPException: If playlist does not exist or if your tracks
                 and/or new_pos arguments are invalid.
         """
         # allow either a string 'SQ:10' or an object with item_id attribute.
-        object_id = getattr(sonos_playlist, 'item_id', sonos_playlist)
+        object_id = getattr(sonos_playlist, "item_id", sonos_playlist)
 
-        if isinstance(tracks, UnicodeType):
-            track_list = [tracks, ]
-            position_list = [new_pos, ]
+        if isinstance(tracks, str):
+            track_list = [
+                tracks,
+            ]
+            position_list = [
+                new_pos,
+            ]
         elif isinstance(tracks, int):
-            track_list = [tracks, ]
+            track_list = [
+                tracks,
+            ]
             if new_pos is None:
-                new_pos = ''
-            position_list = [new_pos, ]
+                new_pos = ""
+            position_list = [
+                new_pos,
+            ]
         else:
             track_list = [str(x) for x in tracks]
-            position_list = [str(x) if x is not None else '' for x in new_pos]
+            position_list = [str(x) if x is not None else "" for x in new_pos]
         # track_list = ','.join(track_list)
         # position_list = ','.join(position_list)
         if update_id == 0:  # retrieve the update id for the object
             response, _ = self.music_library._music_lib_search(object_id, 0, 1)
-            update_id = response['UpdateID']
+            update_id = response["UpdateID"]
         change = 0
 
         for track, position in zip(track_list, position_list):
-            if track == position:   # there is no move, a no-op
+            if track == position:  # there is no move, a no-op
                 continue
-            response = self.avTransport.ReorderTracksInSavedQueue([
-                ("InstanceID", 0),
-                ("ObjectID", object_id),
-                ("UpdateID", update_id),
-                ("TrackList", track),
-                ("NewPositionList", position),
-            ])
-            change += int(response['QueueLengthChange'])
-            update_id = int(response['NewUpdateID'])
-        length = int(response['NewQueueLength'])
-        response = {'change': change,
-                    'update_id': update_id,
-                    'length': length}
+            response = self.avTransport.ReorderTracksInSavedQueue(
+                [
+                    ("InstanceID", 0),
+                    ("ObjectID", object_id),
+                    ("UpdateID", update_id),
+                    ("TrackList", track),
+                    ("NewPositionList", position),
+                ]
+            )
+            change += int(response["QueueLengthChange"])
+            update_id = int(response["NewUpdateID"])
+        length = int(response["NewQueueLength"])
+        response = {"change": change, "update_id": update_id, "length": length}
         return response
 
     @only_on_master
@@ -1955,19 +2642,18 @@ class SoCo(_SocoSingletonBase):
             SoCoUPnPException: See :py:meth:`reorder_sonos_playlist`
         """
         if not isinstance(sonos_playlist, DidlPlaylistContainer):
-            sonos_playlist = self.get_sonos_playlist_by_attr('item_id',
-                                                             sonos_playlist)
+            sonos_playlist = self.get_sonos_playlist_by_attr("item_id", sonos_playlist)
         count = self.music_library.browse(ml_item=sonos_playlist).total_matches
-        tracks = ','.join([str(x) for x in range(count)])
+        tracks = ",".join([str(x) for x in range(count)])
         if tracks:
-            return self.reorder_sonos_playlist(sonos_playlist, tracks=tracks,
-                                               new_pos='', update_id=update_id)
+            return self.reorder_sonos_playlist(
+                sonos_playlist, tracks=tracks, new_pos="", update_id=update_id
+            )
         else:
-            return {'change': 0, 'update_id': update_id, 'length': count}
+            return {"change": 0, "update_id": update_id, "length": count}
 
     @only_on_master
-    def move_in_sonos_playlist(self, sonos_playlist, track, new_pos,
-                               update_id=0):
+    def move_in_sonos_playlist(self, sonos_playlist, track, new_pos, update_id=0):
         """Move a track to a new position within a Sonos Playlist.
         This is a convenience method for :py:meth:`reorder_sonos_playlist`.
 
@@ -1992,8 +2678,9 @@ class SoCo(_SocoSingletonBase):
         Raises:
             SoCoUPnPException: See :py:meth:`reorder_sonos_playlist`
         """
-        return self.reorder_sonos_playlist(sonos_playlist, int(track),
-                                           int(new_pos), update_id)
+        return self.reorder_sonos_playlist(
+            sonos_playlist, int(track), int(new_pos), update_id
+        )
 
     @only_on_master
     def remove_from_sonos_playlist(self, sonos_playlist, track, update_id=0):
@@ -2020,8 +2707,7 @@ class SoCo(_SocoSingletonBase):
         Raises:
             SoCoUPnPException: See :py:meth:`reorder_sonos_playlist`
         """
-        return self.reorder_sonos_playlist(sonos_playlist, int(track), None,
-                                           update_id)
+        return self.reorder_sonos_playlist(sonos_playlist, int(track), None, update_id)
 
     @only_on_master
     def get_sonos_playlist_by_attr(self, attr_name, match):
@@ -2050,8 +2736,68 @@ class SoCo(_SocoSingletonBase):
         for sonos_playlist in self.get_sonos_playlists():
             if getattr(sonos_playlist, attr_name) == match:
                 return sonos_playlist
-        raise ValueError('No match on "{0}" for value "{1}"'.format(attr_name,
-                                                                    match))
+        raise ValueError('No match on "{}" for value "{}"'.format(attr_name, match))
+
+    def get_battery_info(self, timeout=3.0):
+        """Get battery information for a Sonos speaker.
+
+        Obtains battery information for Sonos speakers that report it. This only
+        applies to Sonos Move speakers at the time of writing.
+
+        This method may only work on Sonos 'S2' systems.
+
+        Args:
+            timeout (float, optional): The timeout to use when making the
+                HTTP request.
+
+        Returns:
+            dict: A `dict` containing battery status data.
+
+            Example return value::
+
+                {'Health': 'GREEN',
+                 'Level': 100,
+                 'Temperature': 'NORMAL',
+                 'PowerSource': 'SONOS_CHARGING_RING'}
+
+        Raises:
+            NotSupportedException: If the speaker does not report battery
+                information.
+            ConnectionError: If the HTTP connection failed, or returned an
+                unsuccessful status code.
+            TimeoutError: If making the HTTP connection, or reading the
+                response, timed out.
+        """
+
+        # Retrieve information from the speaker's status URL
+        try:
+            response = requests.get(
+                "http://" + self.ip_address + ":1400/status/batterystatus",
+                timeout=timeout,
+            )
+        except (ConnectTimeout, ReadTimeout) as error:
+            raise TimeoutError from error
+        except RequestsConnectionError as error:
+            raise ConnectionError from error
+
+        if response.status_code != 200:
+            raise ConnectionError
+
+        # Convert the XML response and traverse to obtain the battery information
+        battery_info = {}
+        try:
+            zp_info = xmltodict.parse(response.text)["ZPSupportInfo"]
+            for info_item in zp_info["LocalBatteryStatus"]["Data"]:
+                battery_info[info_item["@name"]] = info_item["#text"]
+            try:
+                battery_info["Level"] = int(battery_info["Level"])
+            except (KeyError, ValueError):
+                pass
+        except (KeyError, ExpatError, TypeError) as error:
+            # Battery information not supported
+            raise NotSupportedException from error
+
+        return battery_info
 
 
 # definition section
@@ -2060,14 +2806,52 @@ RADIO_STATIONS = 0
 RADIO_SHOWS = 1
 SONOS_FAVORITES = 2
 
-NS = {'dc': '{http://purl.org/dc/elements/1.1/}',
-      'upnp': '{urn:schemas-upnp-org:metadata-1-0/upnp/}',
-      '': '{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}'}
-# Valid play modes
-PLAY_MODES = ('NORMAL', 'SHUFFLE_NOREPEAT', 'SHUFFLE', 'REPEAT_ALL',
-              'SHUFFLE_REPEAT_ONE', 'REPEAT_ONE')
-# soundbar product names
-SOUNDBARS = ('playbase', 'playbar', 'beam')
+NS = {
+    "dc": "{http://purl.org/dc/elements/1.1/}",
+    "upnp": "{urn:schemas-upnp-org:metadata-1-0/upnp/}",
+    "": "{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}",
+}
+
+# Valid play modes and their meanings as (shuffle, repeat) tuples
+PLAY_MODES = {
+    "NORMAL": (False, False),
+    "SHUFFLE_NOREPEAT": (True, False),
+    "SHUFFLE": (True, True),
+    "REPEAT_ALL": (False, True),
+    "SHUFFLE_REPEAT_ONE": (True, "ONE"),
+    "REPEAT_ONE": (False, "ONE"),
+}
+# Inverse mapping of PLAY_MODES
+PLAY_MODE_BY_MEANING = {meaning: mode for mode, meaning in PLAY_MODES.items()}
+
+# Music source names
+MUSIC_SRC_LIBRARY = "LIBRARY"
+MUSIC_SRC_RADIO = "RADIO"
+MUSIC_SRC_WEB_FILE = "WEB_FILE"
+MUSIC_SRC_LINE_IN = "LINE_IN"
+MUSIC_SRC_TV = "TV"
+MUSIC_SRC_AIRPLAY = "AIRPLAY"
+MUSIC_SRC_UNKNOWN = "UNKNOWN"
+MUSIC_SRC_NONE = "NONE"
+
+# URI prefixes for music sources
+SOURCES = {
+    r"^$": MUSIC_SRC_NONE,
+    r"^x-file-cifs:": MUSIC_SRC_LIBRARY,
+    r"^x-rincon-mp3radio:": MUSIC_SRC_RADIO,
+    r"^x-sonosapi-stream:": MUSIC_SRC_RADIO,
+    r"^x-sonosapi-radio:": MUSIC_SRC_RADIO,
+    r"^x-sonosapi-hls:": MUSIC_SRC_RADIO,
+    r"^aac:": MUSIC_SRC_RADIO,
+    r"^hls-radio:": MUSIC_SRC_RADIO,
+    r"^https?:": MUSIC_SRC_WEB_FILE,
+    r"^x-rincon-stream:": MUSIC_SRC_LINE_IN,
+    r"^x-sonos-htastream:": MUSIC_SRC_TV,
+    r"^x-sonos-vli:.*,airplay:": MUSIC_SRC_AIRPLAY,
+}
+
+# Soundbar product names
+SOUNDBARS = ("playbase", "playbar", "beam", "sonos amp", "arc", "arc sl")
 
 if config.SOCO_CLASS is None:
     config.SOCO_CLASS = SoCo

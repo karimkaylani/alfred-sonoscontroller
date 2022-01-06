@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # pylint: disable=not-context-manager,import-error,wrong-import-position
 
 # NOTE: The pylint not-content-manager warning is disabled pending the fix of
@@ -11,7 +10,7 @@
 """Classes to handle Sonos UPnP Events and Subscriptions.
 
 The `Subscription` class from this module will be used in
-:py:mod:`soco.services` if config.EVENTS_MODULE is set
+:py:mod:`soco.services` if `config.EVENTS_MODULE` is set
 to point to this module.
 
 Example:
@@ -63,15 +62,16 @@ twisted.python.failure.Failure.html
 
 """
 
-from __future__ import unicode_literals
 
 import sys
 import logging
 
 # Hack to make docs build without twisted installed
 if "sphinx" in sys.modules:
-    class Resource(object):  # pylint: disable=no-init
+
+    class Resource:  # pylint: disable=no-init
         """Fake Resource class to use when building docs"""
+
 else:
     from twisted.internet import reactor
     from twisted.web.server import Site
@@ -87,8 +87,10 @@ else:
 from .events_base import Event  # noqa: F401
 
 from .events_base import (  # noqa: E402
-    EventNotifyHandlerBase, EventListenerBase, SubscriptionBase,
-    SubscriptionsMap
+    EventNotifyHandlerBase,
+    EventListenerBase,
+    SubscriptionBase,
+    SubscriptionsMap,
 )
 
 from .exceptions import SoCoException  # noqa: E402
@@ -100,10 +102,11 @@ class EventNotifyHandler(Resource, EventNotifyHandlerBase):
     """Handles HTTP ``NOTIFY`` Verbs sent to the listener server.
     Inherits from `soco.events_base.EventNotifyHandlerBase`.
     """
+
     isLeaf = True
 
     def __init__(self):
-        super(EventNotifyHandler, self).__init__()
+        super().__init__()
         # The SubscriptionsMapTwisted instance created when this module is
         # imported. This is referenced by
         # soco.events_base.EventNotifyHandlerBase.
@@ -115,18 +118,16 @@ class EventNotifyHandler(Resource, EventNotifyHandlerBase):
         """
         headers = {}
         for header in request.requestHeaders.getAllRawHeaders():
-            decoded_key = header[0].decode('utf8').lower()
-            decoded_header = header[1][0].decode('utf8')
+            decoded_key = header[0].decode("utf8").lower()
+            decoded_header = header[1][0].decode("utf8")
             headers[decoded_key] = decoded_header
         content = request.content.read()
         self.handle_notification(headers, content)
-        return b'OK'
+        return b"OK"
 
     # pylint: disable=no-self-use, missing-docstring
     def log_event(self, seq, service_id, timestamp):
-        log.info(
-            "Event %s received for %s service at %s", seq,
-            service_id, timestamp)
+        log.debug("Event %s received for %s service at %s", seq, service_id, timestamp)
 
 
 class EventListener(EventListenerBase):
@@ -138,7 +139,7 @@ class EventListener(EventListenerBase):
     """
 
     def __init__(self):
-        super(EventListener, self).__init__()
+        super().__init__()
         #:  :py:class:`twisted.internet.tcp.Port`: set at `listen`
         self.port = None
 
@@ -166,14 +167,16 @@ class EventListener(EventListenerBase):
             See `config.EVENT_LISTENER_PORT`
         """
         factory = Site(EventNotifyHandler())
-        for port_number in range(self.requested_port_number,
-                                 self.requested_port_number + 100):
+        for port_number in range(
+            self.requested_port_number, self.requested_port_number + 100
+        ):
             try:
                 if port_number > self.requested_port_number:
-                    log.warning("Trying next port (%d)", port_number)
+                    log.debug("Trying next port (%d)", port_number)
                 # pylint: disable=no-member
-                self.port = reactor.listenTCP(port_number, factory,
-                                              interface=ip_address)
+                self.port = reactor.listenTCP(
+                    port_number, factory, interface=ip_address
+                )
                 break
             # pylint: disable=invalid-name
             except twisted.internet.error.CannotListenError as e:
@@ -181,8 +184,7 @@ class EventListener(EventListenerBase):
                 continue
 
         if self.port:
-            log.info("Event listener running on %s", (ip_address,
-                                                      self.port.port))
+            log.debug("Event listener running on %s", (ip_address, self.port.port))
             return self.port.port
         else:
             return None
@@ -198,6 +200,7 @@ class Subscription(SubscriptionBase):
     """A class representing the subscription to a UPnP event.
     Inherits from `soco.events_base.SubscriptionBase`.
     """
+
     def __init__(self, service, event_queue=None):
         """
         Args:
@@ -208,7 +211,7 @@ class Subscription(SubscriptionBase):
                 created and used.
 
         """
-        super(Subscription, self).__init__(service, event_queue)
+        super().__init__(service, event_queue)
         #: :py:obj:`function`: callback function to be called whenever an
         #: `Event` is received. If it is set and is callable, the callback
         #: function will be called with the `Event` as the only parameter and
@@ -256,11 +259,11 @@ class Subscription(SubscriptionBase):
 
         Returns:
             Deferred_: A Deferred_ the result of which will be the
-                Subscription instance and the subscription property of which
-                will point to the Subscription instance.
+            Subscription instance and the subscription property of which
+            will point to the Subscription instance.
 
         """
-        subscribe = super(Subscription, self).subscribe
+        subscribe = super().subscribe
         return self._wrap(subscribe, strict, requested_timeout, auto_renew)
 
     def renew(self, requested_timeout=None, is_autorenew=False, strict=True):
@@ -276,7 +279,7 @@ class Subscription(SubscriptionBase):
                 request should be made. If None (the default), use the timeout
                 requested on subscription.
             is_autorenew (bool, optional): Whether this is an autorenewal.
-                Default 'False'.
+                Default `False`.
             strict (bool, optional): If True and an Exception occurs during
                 execution, the returned Deferred_ will fail with a Failure_
                 which will be passed to the applicable errback (if any has
@@ -287,11 +290,11 @@ class Subscription(SubscriptionBase):
 
         Returns:
             Deferred_: A Deferred_ the result of which will be the
-                Subscription instance and the subscription property of which
-                will point to the Subscription instance.
+            Subscription instance and the subscription property of which
+            will point to the Subscription instance.
 
         """
-        renew = super(Subscription, self).renew
+        renew = super().renew
         return self._wrap(renew, strict, requested_timeout, is_autorenew)
 
     def unsubscribe(self, strict=True):
@@ -312,16 +315,17 @@ class Subscription(SubscriptionBase):
 
         Returns:
             Deferred_: A Deferred_ the result of which will be the
-                Subscription instance and the subscription property of which
-                will point to the Subscription instance.
+            Subscription instance and the subscription property of which
+            will point to the Subscription instance.
         """
-        unsubscribe = super(Subscription, self).unsubscribe
+        unsubscribe = super().unsubscribe
         return self._wrap(unsubscribe, strict)
 
     def _auto_renew_start(self, interval):
         """Starts the auto_renew loop."""
-        self._auto_renew_loop = task.LoopingCall(self.renew, is_autorenew=True,
-                                                 strict=False)
+        self._auto_renew_loop = task.LoopingCall(
+            self.renew, is_autorenew=True, strict=False
+        )
         # False means wait for the interval to elapse, rather than fire at once
         self._auto_renew_loop.start(interval, False)
 
@@ -332,7 +336,7 @@ class Subscription(SubscriptionBase):
             self._auto_renew_loop = None
 
     # pylint: disable=no-self-use, too-many-branches, too-many-arguments
-    def _request(self, method, url, headers, success):
+    def _request(self, method, url, headers, success, unconditional=None):
         """Sends an HTTP request.
 
         Args:
@@ -343,6 +347,9 @@ class Subscription(SubscriptionBase):
             success (function): A function to be called if the
                 request succeeds. The function will be called with a dict
                 of response headers as its only parameter.
+            unconditional (function): An optional function to be called after
+                the request is complete, regardless of its success. Takes
+                no parameters.
 
         """
         agent = BrowserLikeRedirectAgent(Agent(reactor))
@@ -354,27 +361,25 @@ class Subscription(SubscriptionBase):
                 if isinstance(header, (list,)):
                     header = header[0]
                 if not isinstance(header, (bytes, bytearray)):
-                    header = header.encode('latin-1')
-                    k = k.encode('latin-1')
+                    header = header.encode("latin-1")
+                    k = k.encode("latin-1")
                 headers[k] = [header]
 
-        args = (
-            method.encode('latin-1'),
-            url.encode('latin-1'),
-            Headers(headers)
-        )
+        args = (method.encode("latin-1"), url.encode("latin-1"), Headers(headers))
         d = agent.request(*args)  # pylint: disable=invalid-name
 
         def on_success(response):  # pylint: disable=missing-docstring
             response_headers = {}
             for header in response.headers.getAllRawHeaders():
-                decoded_key = header[0].decode('utf8').lower()
-                decoded_header = header[1][0].decode('utf8')
+                decoded_key = header[0].decode("utf8").lower()
+                decoded_header = header[1][0].decode("utf8")
                 response_headers[decoded_key] = decoded_header
             success(response_headers)
             return self
 
         d.addCallback(on_success)
+        if unconditional:
+            d.addBoth(unconditional)
         return d
 
     def _wrap(self, method, strict, *args, **kwargs):
@@ -413,19 +418,17 @@ class Subscription(SubscriptionBase):
 
         # pylint: disable=unused-argument
         def execute(result, method, *args, **kwargs):
-            """Execute method
-            """
+            """Execute method"""
             # Increment the counter of pending calls to Subscription.subscribe
             # if method is subscribe
-            if method.__name__ == 'subscribe':
+            if method.__name__ == "subscribe":
                 self.subscriptions_map.subscribing()
 
             # Execute method
             return method(*args, **kwargs)
 
         def callnext():
-            """Call the next deferred in the queue.
-            """
+            """Call the next deferred in the queue."""
             # If there is another deferred in the queue,
             # call it
             if self._queue:
@@ -444,35 +447,39 @@ class Subscription(SubscriptionBase):
                 # If a Failure or Exception occurred during execution of
                 # subscribe, renew or unsubscribe, cancel it unless the
                 # Failure or Exception was a SoCoException upon subscribe
-                if failure.type != SoCoException or action == 'renew':
-                    msg = "An Exception occurred. Subscription to" +\
-                        " {}, sid: {} has been cancelled".format(
-                            self.service.base_url +
-                            self.service.event_subscription_url,
-                            self.sid)
+                if failure.type != SoCoException or action == "renew":
+                    msg = (
+                        "An Exception occurred. Subscription to"
+                        + " {}, sid: {} has been cancelled".format(
+                            self.service.base_url + self.service.event_subscription_url,
+                            self.sid,
+                        )
+                    )
                     self._cancel_subscription(msg)
                 # If we're not being strict, log the Failure
                 if not strict:
-                    msg = "Failure received in Subscription" +\
-                        ".{} for Subscription to:\n{}, sid: {}: {}".format(
+                    msg = (
+                        "Failure received in Subscription"
+                        + ".{} for Subscription to:\n{}, sid: {}: {}".format(
                             action,
-                            self.service.base_url +
-                            self.service.event_subscription_url,
+                            self.service.base_url + self.service.event_subscription_url,
                             self.sid,
-                            str(failure))
+                            str(failure),
+                        )
+                    )
                     log.exception(msg)
                     # If we're not being strict upon a renewal
                     # (e.g. an autorenewal) call the optional
                     # self.auto_renew_fail method, if it has been set
-                    if action == 'renew':
+                    if action == "renew":
                         if self.auto_renew_fail:
-                            if hasattr(self.auto_renew_fail, '__call__'):
+                            if hasattr(self.auto_renew_fail, "__call__"):
                                 # pylint: disable=not-callable
                                 self.auto_renew_fail(failure)
 
             # Decrement the counter of pending calls to Subscription.subscribe
             # if completed action was subscribe
-            if action == 'subscribe':
+            if action == "subscribe":
                 self.subscriptions_map.finished_subscribing()
 
             # Remove the previous deferred from the queue
@@ -510,8 +517,9 @@ class SubscriptionsMapTwisted(SubscriptionsMap):
 
     Inherits from `soco.events_base.SubscriptionsMap`.
     """
+
     def __init__(self):
-        super(SubscriptionsMapTwisted, self).__init__()
+        super().__init__()
         # A counter of calls to Subscription.subscribe
         # that have started but not completed. This is
         # to prevent the event listener from being stopped prematurely
@@ -532,8 +540,7 @@ class SubscriptionsMapTwisted(SubscriptionsMap):
         self.subscriptions[subscription.sid] = subscription
         # Register subscription to be unsubscribed at exit if still alive
         # pylint: disable=no-member
-        reactor.addSystemEventTrigger('before', 'shutdown',
-                                      subscription.unsubscribe)
+        reactor.addSystemEventTrigger("before", "shutdown", subscription.unsubscribe)
 
     def subscribing(self):
         """Called when the `Subscription.subscribe` method
