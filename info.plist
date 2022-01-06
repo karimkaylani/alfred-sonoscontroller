@@ -66,7 +66,7 @@
 				<key>escaping</key>
 				<integer>102</integer>
 				<key>script</key>
-				<string>python sonos.py "{query}"</string>
+				<string>python3 sonos.py "{query}"</string>
 				<key>scriptargtype</key>
 				<integer>0</integer>
 				<key>scriptfile</key>
@@ -109,7 +109,7 @@
 				<key>runningsubtext</key>
 				<string>Fetching Sonos devices</string>
 				<key>script</key>
-				<string>python sonos.py "{query}"</string>
+				<string>python3 sonos.py "{query}"</string>
 				<key>scriptargtype</key>
 				<integer>0</integer>
 				<key>scriptfile</key>
@@ -310,11 +310,11 @@ This workflow is released under the MIT license</string>
 	<dict>
 		<key>interface_address</key>
 		<string></string>
+		<key>multi_household</key>
+		<string></string>
 	</dict>
-	<key>variablesdontexport</key>
-	<array/>
 	<key>version</key>
-	<string>1.4.1</string>
+	<string>1.5.0</string>
 	<key>webaddress</key>
 	<string>https://github.com/karimkaylani/alfred-sonoscontroller</string>
 </dict>
