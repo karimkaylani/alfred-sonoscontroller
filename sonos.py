@@ -3,7 +3,7 @@
 
 import sys
 import argparse
-from workflow import Workflow
+from workflow import Workflow3 as Workflow
 import os
 
 log = None    
@@ -19,11 +19,17 @@ def main(wf):
     #fetch sonos speakers
 
     interface = os.getenv('interface_address')
+    multi_household_env = os.getenv('multi_household')
+    
+    multi_household = (len(multi_household_env) > 0)
 
     if (len(interface) > 0):
         speakers = soco.discover(interface_addr=interface)
     else:
-        speakers = soco.discover()    
+        if (multi_household):
+            speakers = soco.discovery.scan_network(multi_household=True)
+        else:
+            speakers = soco.discover()    
 
     query = args.query
     speakerName = query.partition(';')[0]
@@ -38,7 +44,10 @@ def main(wf):
         pass
 
     if len(query.split()) >= 1:
-        device = soco.discovery.by_name(speakerName)
+        if (multi_household):
+            device = soco.discovery.scan_network_get_by_name(speakerName, multi_household=True)
+        else:
+            device = soco.discovery.by_name(speakerName)
         try:
             if "plpau" in query:
                 if device.get_current_transport_info()['current_transport_state'] == "PLAYING":

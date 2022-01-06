@@ -4,6 +4,11 @@
 
 [![INSERT YOUR GRAPHIC HERE](https://i.imgur.com/r5QBNKI.jpg)]()
 
+## Requirements
+
+- Python 3
+- Alfred Version 3 or above
+
 ## Installation
 
 <a href="https://github.com/karimkaylani/alfred-sonoscontroller/releases/latest/download/sonoscontroller.alfredworkflow" target="_blank">Download</a>
@@ -82,11 +87,15 @@ If you are still recieving this error, you can try manually setting the interfac
 
 2. Double click under the value column on interface_address and enter in the address of your local IP
 
+If you have multiple households on your network (or if you have a split S1 / S2 system), got to the Workflows setting (as described above) and set the value for "multi_household" to "true".
+
 ## Acknowledgements
 
 This workflow was built using [deanishe's Alfred-Workflow](http://www.deanishe.net/alfred-workflow/)
 
 Huge shoutout to the team behind [SoCo](http://python-soco.com/) which this workflow uses heavily
+
+Multi Household support added by Clancy Childs
 
 ---
 
